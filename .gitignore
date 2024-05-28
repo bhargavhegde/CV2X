@@ -1,6 +1,7 @@
 # misc
 *.venv/
 *data/
+*.DS_Store
 
 # C project
 # Prerequisites
