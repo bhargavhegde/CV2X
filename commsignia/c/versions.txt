@@ -1,3 +1,0 @@
-Release version:                    y20.39.4-b205116
-
-Stack API:                          v20.1
