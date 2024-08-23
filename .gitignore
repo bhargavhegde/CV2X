@@ -3,6 +3,10 @@
 *data/
 *.DS_Store
 
+# python package
+*.pyc
+*__pycache__*
+
 # C project
 # Prerequisites
 *.d
