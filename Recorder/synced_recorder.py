@@ -1,6 +1,6 @@
 # This is a debug version of the recorder, to fix the time sync issue of latest NAV not updating on time
 # current version is able to sync data form NAV and FAC, however, still requires to do real time h computation
-# built-in pacakage
+# built-in package
 import os
 import time
 import json
@@ -35,8 +35,9 @@ FAC_MSG_BUFFER = {}
 sync_buffer = {}
 sync_info = {}
 sync_in_main = []
+print_interval = 20
 
-Want_to_check_msg = False
+Want_to_check_msg = True
 # for data saving path directories
 if not os.path.exists("data"):
     os.mkdir("data")
@@ -76,12 +77,9 @@ def nav_callback(data: NavNotifData):
 
         if sync_buffer:
             sync_save = list(element[0] for element in sync_buffer.values())
-            # print('from callback :', sync_save)
             with open(sync_directory, 'a') as file:
-                # sync_values = [str(item) for item in sync_save]
                 json.dump(sync_save, file)
                 file.write("\n")
-                # file.write(",".join(sync_values) + "\n")
           
 
 def synchronization(nav_msg_buffer, fac_msg_buffer):
@@ -94,8 +92,6 @@ def synchronization(nav_msg_buffer, fac_msg_buffer):
     latest_FAC_time = min(FAC_time) # reference earliest among all latest updates to sync FAC message for integration
     if len(NAV_time) > 1:
         NAVindex, _ = finding_diffmin(NAV_time, latest_FAC_time)
-        # print('nav_ind', NAVindex)
-        # sync_buffer['latest_NAV_time'] = NAV_time[0]
         if 'latest_NAV_time' not in sync_buffer:
             sync_buffer['latest_NAV_time'] = deque([NAV_time[0]], maxlen=20)
         else:
@@ -116,13 +112,8 @@ def synchronization(nav_msg_buffer, fac_msg_buffer):
         for keys in fac_msg_buffer:
             FAC_history = list(fac_msg_buffer[keys])
             FAC_timehistory = [item[-1] for item in FAC_history]
-            # find the msg with time cloest to the latest NAV message
+            # find the msg with time closest to the latest NAV message
             Findex, _ = finding_diffmin(FAC_timehistory, NAV_time[NAVindex])
-            # print('FAC history', FAC_history)
-            # # print(FAC_timehistory)
-            # # print(NAV_time[NAVindex])
-            # print('sync nav time', NAV_time[NAVindex])
-            # print('sync fac index', Findex)
             if keys not in sync_buffer:
                 sync_buffer[keys] = deque([FAC_history[Findex]], maxlen=20)
             else:
@@ -136,33 +127,26 @@ def controller_input(synced_data):
     control_input = {}
     # ego vehicle info
     ego_vehicle = synced_data[2]
-    # print(synced_data)
-    # print('ego_vehicle', ego_vehicle)
     ego_vehicle_speed = ego_vehicle[-3]
     ego_vehicle_lat = ego_vehicle[1]
     ego_vehicle_long = ego_vehicle[2]
-    # control_input["pctime from NAV"] = [synced_data[-1]]
     control_input["ego_vehicle_speed"] = [ego_vehicle_speed]
     # front vehicle info
     number_of_devices = len(synced_data) - 4
-    # print('number_of_devices', number_of_devices)
     for i in range(number_of_devices):
         i = i + 3
         front_vehicle_info = synced_data[i]
-        # print('here',front_vehicle_info)
         front_vehicle_ID = front_vehicle_info[0]
         front_vehicle_speed = front_vehicle_info[-5]
         front_vehicle_lat = front_vehicle_info[4]
         front_vehicle_long = front_vehicle_info[5]
         front_vehicle_hdwy = headway_real(ego_vehicle_lat, ego_vehicle_long, front_vehicle_lat, front_vehicle_long)
         control_input[front_vehicle_ID] = [front_vehicle_ID, front_vehicle_speed, front_vehicle_hdwy]
-    # print(control_input)
     return control_input
 
 
 def headway_real(lat_ego, lon_ego, hearing_lat, hearing_lon):
     r = 6371000
-    # e for point 1 , and f for point 2
     lat_e = lat_ego
     lon_e = lon_ego
     lat_f = hearing_lat
@@ -185,19 +169,12 @@ def headway_real(lat_ego, lon_ego, hearing_lat, hearing_lon):
 
 def fac_callback(key: int, data: FacNotifData, buffer: bytes) -> None:
 
-    # global FAC_MSG_BUFFER
-    # global FAC_msg
     decoded_message = asn1_decode(buffer, Asn1Type.US_MESSAGE_FRAME)
     hearing_ID = decoded_message["value"][1]["coreData"]["id"].hex()
     timestamp = round(time.time() * 1000)
     time_generated_theory = integrate_time(timestamp, decoded_message["value"][1]["coreData"]["secMark"])
     time_generated_bounded = generate_fac_time(timestamp, decoded_message["value"][1]["coreData"]["secMark"])
-    # print("timestamp",timestamp)
-    # print("time_generated_theory",time_generated_theory)
-    # print("time_generated_bounded",time_generated_bounded)
-    
-    # use entry to update fac receive in format of dictionary
-    # update buffer dictionary
+
     FAC_msg = {"OBU_ID": hearing_ID,
                "timestamp": timestamp,
                "msgCnt": decoded_message["value"][1]["coreData"]["msgCnt"],
@@ -212,7 +189,6 @@ def fac_callback(key: int, data: FacNotifData, buffer: bytes) -> None:
                "time_generated_bounded": time_generated_bounded}
     
     with open(fac_directory, 'a') as ffile:
-        # fac_values = [str(item) for item in FAC_msg.values()]
         fac_values = list(FAC_msg.values())
         json.dump(fac_values, ffile)
         ffile.write("\n")
@@ -276,12 +252,8 @@ def main() -> None:
                     sync_in_main = list(element[0] for element in sync_buffer.values())
                     sync_in_main.extend([time_current])
             
-                # print(sync_in_main)
                 if len(sync_in_main) > 1:
-                    #    print(sync_info)
-                    #    print(sync_info[0][0], round(time.time() * 1000))
                     control_input = controller_input(sync_in_main)
-                    # print('ctrl_input', control_input)
                     speed_hdwy = list(control_input.values())
                     ctrl_intermediate = []
                     for sub in speed_hdwy:
@@ -290,9 +262,10 @@ def main() -> None:
                     control_input_save = [sync_in_main[0], time_current, ctrl_intermediate, sync_in_main[1]]
 
                     if Want_to_check_msg is True:
-                        print('other vehicle info received, syncing')
-                        if print_counter > 20:
+                        if print_counter > print_interval:
                             print('Current time is:', time_current)
+                            print(control_input)
+                            print_counter=0
 
                     with open(ctrl_directory, 'a') as file:
                         json.dump(control_input_save, file)
@@ -304,3 +277,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

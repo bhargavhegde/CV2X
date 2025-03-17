@@ -4,7 +4,6 @@ from collections import deque
 # self-written module, already in same directory
 from module_for_unittest import synchronization, finding_diffmin
 
-
 class TestSynchronization(unittest.TestCase):
 
     def test_synchronization(self):
@@ -29,7 +28,6 @@ class TestSynchronization(unittest.TestCase):
 
         expected_sync_buffer = {
             'latest_NAV_time': deque([1723746760500], maxlen=20),
-            # 'pc_time': deque([fixed_timestamp], maxlen=20),
             'synced_NAV_profile': deque([NAV_profiles[0]], maxlen=20),
             '2a3c6435': deque([fac_sample_data1[0]], maxlen=20),
             '2a3c645e': deque([fac_sample_data2[0]], maxlen=20),
@@ -41,11 +39,9 @@ class TestSynchronization(unittest.TestCase):
 
         # Assertions
         self.assertEqual(sync_buffer['latest_NAV_time'], expected_sync_buffer['latest_NAV_time'])
-        # self.assertEqual(sync_buffer['pc_time'], expected_sync_buffer['pc_time'])
         self.assertEqual(sync_buffer['synced_NAV_profile'], expected_sync_buffer['synced_NAV_profile'])
         self.assertEqual(sync_buffer['2a3c6435'], expected_sync_buffer['2a3c6435'])
         self.assertEqual(sync_buffer['2a3c645e'], expected_sync_buffer['2a3c645e'])
-        # self.assertEqual(sync_buffer['FAC3'], expected_sync_buffer['FAC3'])
 
     def test_finding_diffmin(self):
         array1 = [100, 200, 300]
