@@ -1,0 +1,11 @@
+{
+    "V2X_STACK_IP" : "192.168.1.54",
+    "RECEIVE_IMAGE_PSID" : 200,
+    "SEND_CONFIRM_PSID" : 300,
+    "SEND_FEEDBACK_PSID" : 400,
+    "SEND_READY_PSID" : 201,
+    "CHUNK_SIZE" : 1024,
+    "CYCLE_TIMEOUT" : 1.5,
+    "READY_TIMEOUT" : 1
+    
+}
