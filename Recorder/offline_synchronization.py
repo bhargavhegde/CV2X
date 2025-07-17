@@ -4,7 +4,7 @@ import json
 import argparse
 from collections import deque
 # self-written module, already in same directory
-from module_for_unittest import synchronization, finding_diffmin
+from utility import synchronization, finding_diffmin
 
 with open('./device_dictionary.json','r') as file:
     ID_dictionary = json.load(file)

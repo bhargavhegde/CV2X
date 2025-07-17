@@ -2,7 +2,7 @@
 import unittest
 from collections import deque
 # self-written module, already in same directory
-from module_for_unittest import synchronization, finding_diffmin
+from utility import synchronization, finding_diffmin
 
 class TestSynchronization(unittest.TestCase):
 
