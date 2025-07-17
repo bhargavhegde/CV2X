@@ -3,14 +3,12 @@ This directory contains the code for the Recorder module, which is basic data re
 
 ### File Description
 
-[synced_recorder.py](synced_recorder.py) Main script to run the Recorder with the Commsignia devices. 
-[plotter.py](plotter.py) Script for plotting the recorded data, useful for visualizing the results right after data recording.
-
-[offline_synchronization.py](offline_synchronization.py) Script for offline synchronization of recorded data, developing the synchronization algorithm.
-[test_synchronization.py](test_synchronization.py) Unit tests for the synchronization algorithm.
-[utility.py](utility.py) Utility functions used in the Recorder module.
+[synced_recorder.py](synced_recorder.py) Main script to run the Recorder with the Commsignia devices. \
+[plotter.py](plotter.py) Script for plotting the recorded data, useful for visualizing the results right after data recording. \
+[offline_synchronization.py](offline_synchronization.py) Script for offline synchronization of recorded data, developing the synchronization algorithm. \
+[test_synchronization.py](test_synchronization.py) Unit tests for the synchronization algorithm. \
+[utility.py](utility.py) Utility functions used in the Recorder module. \
 [device_dictionary.json](device_dictionary.json) JSON file containing the device ID dictionary for all the Commsignia devices at SEAS Lab.
-
 
 
 ### Usage
