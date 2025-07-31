@@ -5,7 +5,7 @@ The codes are based on Commsignia V2X Remote Python SDK. The SDK is a python pac
 
 ## Required by all applications
 
-Python 3.11 \
+Python 3.10 \
 ROS2 humble 
 
 ### Additional Requirements

@@ -3,24 +3,10 @@ This repo contains source codes for CV2X based vehicle control.
 
 The codes are based on Commsignia V2X Remote Python SDK. The SDK is a python package to access low level functionality of the Commsignia V2X stack. 
 
-### Setup
-Please refer to group project folder [Commsignia](https://buffalo.box.com/s/f4c25fn1orqedz6q7veceno4writetx1) for details on how to setup Commsignia APIs. 
+**Any code in this repository that uses Commsignia APIs, including links to data and documents, requires a valid license and IP protected. You may not share or use this code without proper authorization from PI Prof. Chaozhe He. If you have any questions or need access, please email Prof. He at chaozheh@buffalo.edu.**
 
-Python interface are used primarily used. Both C and python interfaces shares the same functionalities to V2X stack. C interface has extension to Commsignia safety services at the application level.
+Disclaimer: The programs in this repo are for research purposes only and may not be fully functional without the appropriate Commsignia hardware and/or [UB-CAVAS](https://github.com/ub-cavas) connected automated vehicle setup.
 
-It is recommended to build an virtual environment for Python API usages. E.g., on Mac os (M1 chip).
-```
-    python3 -m venv path/to/venv
-    source path/to/venv/bin/activate
-    python3 -m pip install xyz
-    python3 -m pip install requirements.txt
-```
-
-The Python API requires the package requires python 3.7 or newer version, we recommend using Python 3.9.
-Please add necessary packages to the [requirements.txt](requirements.txt) file.
-
-To installing the package, `pip3 install $whl_dist` (`whl_dist` is the built distribution).
-The current sdk version in use is `Unplugged-RT-y20.39.4-b205116-pythonsdk.tar.xz`. 
 
 ### Protocol on testing the codes
 

@@ -1,6 +1,11 @@
 
 #  OBU_API.py — On-Board Unit V2X Communication Script
 
+<!-- 
+[TODO] merge with `RSU_OBU_API/README_OBU.md` and `Recorder/README.md`
+[TODO] Polish the README to be more user-friendly and comprehensive. Differentiate between testing between OBU and RSU vs the actual OBU API.
+-->
+
 This script implements the **On-Board Unit (OBU)** logic for a V2X (Vehicle-to-Everything) communication system using Commsignia’s SDK. It handles the reception of image chunks from a Roadside Unit (RSU), sends confirmation upon successful reception, and returns feedback (segmented image + text) to the RSU.
 
 ---
