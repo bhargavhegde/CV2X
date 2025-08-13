@@ -56,7 +56,9 @@ Then run the bash command to enter the container:
    python3 cv2x_crack_detection.py
    ```
 
-Remark: due to multi-threading, the crack-detection application may not terminate properly and it appears hanging. 
+## Troubleshooting Tips
+
+Remark 1: Due to multi-threading, the crack-detection application may not terminate properly and it appears hanging. 
 ![fail_to_terminate](pics/terminate_fail.png).
 
 You may need to kill the process manually by running:
@@ -70,3 +72,25 @@ kill -9 <PID>
 ```
 Example:
 ![kill_process](pics/kill_process.png)
+
+
+
+Remark 2: Docker container contains ROS2 and with camera connected it should be able to launch GUI applications such as Rviz. 
+However, sometimes you may encounter the following error when trying to run a GUI application inside the docker container:
+
+```
+Authorization required, but no authorization protocol specified
+qt.qpa.xcb: could not connect to display :1
+qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in "" even though it was found.
+This application failed to start because no Qt platform plugin could be initialized. Reinstalling the application may fix this problem.
+
+Available platform plugins are: eglfs, linuxfb, minimal, minimalegl, offscreen, vnc, xcb.
+
+Aborted (core dumped)
+```
+
+This can be resolved by adding the following tag when launching the docker container:
+```
+ -v ${XAUTHORITY:-$HOME/.Xauthority}:/root/.Xauthority \
+```
+see [docker_run_lincoln.sh](docker_run_lincoln.sh) for details.

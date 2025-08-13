@@ -89,6 +89,7 @@ class OBUHandler:
 
     def send_ready_loop(self):
         def loop():
+            # TODO: [CRH Question] Should we use the API here or pass it as an argument?
             with create_cms_api(host=self.v2x_stack_ip) as api:
                 packet = json.dumps({"obu_id": "OBU_XYZ", "status": "ready"}).encode("utf-8")
                 send_data = WsmpSendData(
@@ -233,6 +234,7 @@ class OBUHandler:
 
                 self.ready_flag.set()
 
+                # TODO: [CRH Question] Should we use the API here or pass it as an argument?
                 with create_cms_api(host=self.v2x_stack_ip) as api:
                     self.send_confirmation(api, image_id)
                     if(not self.image_queue.empty()):
@@ -256,8 +258,16 @@ class OBUHandler:
 
 # Standalone runner that can be imported
 def run_obu(image_queue): #image_queue, gps_crack_lat, gps_crack_lon
+    '''
+    The main function that handles
+    1. (TODO) receiving detection request (including GPS location and images if any)
+    2. (TODO) sending status updates
+    3. sending detection result queue (referred as feedback in this module)
+    4. (TODO) Should we put the BSM publishing here too? Or this will just take api as input?
+    '''
     handler = OBUHandler(image_queue) # image_queue, gps_crack_lat, gps_crack_lon
     handler.send_ready_loop()
+    # TODO: [CRH Question] Should we use the API here or pass it as an argument?
     with create_cms_api(host=handler.v2x_stack_ip) as api:
         def callback(_, __, buffer):
             handler.handle_chunk(buffer)

@@ -7,6 +7,7 @@ This file contains the main classes that process the raw images with cropping wi
 
 # Standard library imports
 import os
+import queue
 import sys
 import time
 from typing import Optional
@@ -23,7 +24,7 @@ import torch
 
 # Local imports
 current_dir = os.path.dirname(__file__)
-sys.path.append(os.path.join("/Deep_crack_inference"))
+sys.path.append(os.path.join("/inference/Deep_crack"))
 from model.deepcrack import DeepCrack 
 from trainer import DeepCrackTrainer
 model_name = "Deep Crack"
@@ -35,7 +36,7 @@ class ImageProcessor(Node):
         super().__init__('image_processor')
         self.get_logger().info('Starting ImageProcessor…')
 
-        self.curr_count = 0 # TODO: check if this is still needed. the msg definition changed.
+        self.curr_count = 0
 
         self.declare_parameter('queue_size', 10000)
         self.declare_parameter('crop_coords', [1032, 1544, 850, 1362])   # y1,y2,x1,x2
@@ -45,7 +46,7 @@ class ImageProcessor(Node):
         self.declare_parameter('camera_topic_suffix', '/image_raw')
         # [CRH] this pth exist in the docker container
         self.declare_parameter('deepcrack_weights',
-                               '/Deep_crack_inference/DeepCrack_CT260_FT1.pth')    
+                               '/inference/Deep_crack/DeepCrack_CT260_FT1.pth')    
         self.declare_parameter('crop_coord_topic', '/crack_pixel') 
         crop_coord_topic = self.get_parameter('crop_coord_topic').value
         self.crop_coord = None 
@@ -81,9 +82,8 @@ class ImageProcessor(Node):
                                                      input_topic,
                                                      self.image_callback,
                                                      q)
-        # [TODO] old version without GPS transmitted.
-        # self.crop_coord_sub = self.create_subscription(Int32MultiArray, crop_coord_topic, self.crop_center_callback, 10)
-        self.crop_coord_sub = self.create_subscription(Float32MultiArray, crop_coord_topic, self.crop_center_callback, 10)
+
+        self.crop_coord_sub = self.create_subscription(Int32MultiArray, crop_coord_topic, self.crop_center_callback, 10)
         self.get_logger().info(f'Subscribed to {input_topic} and {crop_coord_topic}')
 
 
@@ -100,7 +100,7 @@ class ImageProcessor(Node):
         self.frame_count = 0
         self.processing_times = []
 
-    def crop_center_callback(self, msg: Float32MultiArray):
+    def crop_center_callback(self, msg: Int32MultiArray):
         self.crop_coord = msg.data
         self.get_logger().debug(f'Updated crop center to {self.crop_coord}')
 
@@ -156,11 +156,11 @@ class ImageProcessor(Node):
             height, width = cv_img_full.shape[:2]
 
             # check if crop coordinate msg is valid
-            if not self.crop_coord or len(self.crop_coord) != 7:
+            if not self.crop_coord or len(self.crop_coord) != 5:
                 self.get_logger().warn('Invalid crop coordinates received, skipping frame. Still save full image.')
                 valid_crop = False
             else:
-                x1,y1,x2,y2, gps_lat, gps_lon, gps_heading = self.crop_coord
+                x1, y1, x2, y2, self.curr_count = self.crop_coord
                 valid_crop = True
 
             if not valid_crop or not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
@@ -222,7 +222,7 @@ class ImageProcessor(Node):
             #     f.write(f'{ts}_{self.frame_count}')
 
             # Logging Relevant Information
-            image_log = f"Image_Name: {image_name}, Lat: {gps_lat}, Lon: {gps_lon}, heading: {gps_heading}, x1: {x1}, x2: {x2}, y1: {y1}, y2: {y2}\n"
+            image_log = f"Image_Name: {image_name}, count:{self.curr_count}, x1: {x1}, x2: {x2}, y1: {y1}, y2: {y2}\n"
             image_log_filename = 'realtime_data_log.txt'
 
             with open(image_log_filename, "a") as log_file:
@@ -244,23 +244,6 @@ class ImageProcessor(Node):
             self.get_logger().error(f'Frame {self.frame_count} failed: {e}')
 
 
-# def main(args=None):
-#     rclpy.init(args=args)
-#     node = None
-#     try:
-#         node = ImageProcessor()
-#         rclpy.spin(node)
-#     except KeyboardInterrupt:
-#         if node:
-#             node.get_logger().info('Interrupted, shutting down.')
-#     finally:
-#         if node:
-#             node.destroy_node()
-#         rclpy.shutdown()
-
-# if __name__ == '__main__':
-#     main()
-
 def save_images(shared_queue):
     # rclpy.init(args=args)
     node = None
@@ -274,3 +257,22 @@ def save_images(shared_queue):
     finally:
         if node:
             node.destroy_node()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = None
+    try:
+        node = ImageProcessor(queue.Queue())
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        if node:
+            node.get_logger().info('Interrupted, shutting down.')
+    finally:
+        if node:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

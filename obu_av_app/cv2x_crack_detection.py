@@ -5,6 +5,7 @@ This file should contain the main application logic for CV2X Crack Detection.
 
 # Standard library imports
 import argparse
+import json
 import math
 import os
 import queue
@@ -59,7 +60,9 @@ class LincolnTest(Node):
         # including the CV2X subscription
         self.api = api
         # self.api.fac_subscribe(FacMsgType.FAC_MSG_US_BSM, self.fac_callback)
-        self.api.nav_subscribe(self.nav_callback)
+        # TODO: Remove this if we move cv2x API call out of this class
+        if self.api is not None:
+            self.api.nav_subscribe(self.nav_callback)
 
         self.curr_vel = 0
         self.input_acc = 0
@@ -89,6 +92,8 @@ class LincolnTest(Node):
 
         # Publisher
         self.pub_ulc_cmd = self.create_publisher(UlcCmd, '/vehicle/ulc/cmd', 1)
+        # TODO: ISSUE the precision of neither Float32MultiArray nor Int32MultiArray is enough for RTK GPS
+        # which is 2 + 9 decimal places = 11.
         self.pixel_pub = self.create_publisher(Int32MultiArray, '/crack_pixel', 10)
 
         # Parameters
@@ -105,24 +110,8 @@ class LincolnTest(Node):
         # self.crack_loc_lat = crack_gps_lat
         # self.crack_loc_lon = crack_gps_lon
         
-        # TODO: Set these parameters as config.json and load them.
-        # Camera Intrinsic parameters (new calibration 07/30/2025)
-        self.f_x = 3406.175114 # fx in meters
-        self.c_x = 1080.429855 # Principal point x
-        self.f_y = 3423.223242 # fy in meters
-        self.c_y = 785.284572 # Principal point y
-
-        # Camera extrinsic parameters
-        self.camera_height = 1.28 #1.48  # Camera height above road in meters
-        self.camera_pitch = 0  # Camera tilt downward in radians
-        # TODO: Need an Azimuth angle for the camera, for now just assuming 0 radians (facing forward and aligned with heading)
-        self.camera_yaw = 0  # Camera yaw angle in radians
-
-        self.image_width = 2064  # Image width in pixels
-        self.image_height = 1544  # Image height in pixels
-        
-        # Earth radius in meters
-        self.R = 6371000.0  # Earth radius in meters
+        # Load camera parameters from config file
+        self._load_camera_config()
 
         # Latest camera GPS and heading
         self.camera_lat = None
@@ -135,7 +124,50 @@ class LincolnTest(Node):
         self.rtk_lon = None
         self.rtk_heading = None
 
+        # pixel coordinates message counter
+        self.count = 0
 
+    def _load_camera_config(self):
+        """Load camera configuration parameters from config/camera.json file."""
+        try:
+            # Get the directory where this script is located
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            config_path = os.path.join(script_dir, 'config', 'camera.json')
+            
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            # Load camera intrinsic parameters
+            intrinsic = config['camera_intrinsic']
+            self.f_x = intrinsic['f_x']  # fx in pixels
+            self.c_x = intrinsic['c_x']  # Principal point x
+            self.f_y = intrinsic['f_y']  # fy in pixels
+            self.c_y = intrinsic['c_y']  # Principal point y
+            self.image_width = intrinsic['image_width']  # Image width in pixels
+            self.image_height = intrinsic['image_height']  # Image height in pixels
+            
+            # Load camera extrinsic parameters
+            extrinsic = config['camera_extrinsic']
+            self.camera_height = extrinsic['camera_height']  # Camera height above road in meters
+            self.camera_pitch = extrinsic['camera_pitch']  # Camera tilt downward in radians
+            self.camera_yaw = extrinsic['camera_yaw']  # Camera yaw angle in radians
+            
+            # Load earth constants
+            earth = config['earth_constants']
+            self.R = earth['radius']  # Earth radius in meters
+            
+            self.get_logger().info(f'Loaded camera configuration from {config_path}')
+            
+        except FileNotFoundError:
+            self.get_logger().error(f'Camera config file not found at {config_path}.')
+            raise # Re-raise the caught exception
+        except json.JSONDecodeError as e:
+            self.get_logger().error(f'Error parsing camera config JSON: {e}.')
+            raise # Re-raise the caught exception
+        except KeyError as e:
+            self.get_logger().error(f'Missing key in camera config: {e}.')
+            raise  # Re-raise the caught exception
+    
     # for subscribing current speed
     def ulc_report(self, msg: UlcReport):
         # Timestamp
@@ -152,6 +184,9 @@ class LincolnTest(Node):
         # self.get_logger().info(log_msg)
 
     def nav_callback(self, data: NavNotifData) -> None:
+        '''
+        (TODO) Remove this if we move cv2x API call out of this class
+        '''
         print('here!')
         self.own_speed = data.speed / 100
         self.camera_lat = data.latitude / 10e6
@@ -317,7 +352,7 @@ class LincolnTest(Node):
         Y_c = y_prime*sin_pitch + (z_prime-self.camera_height)*cos_pitch  # Up-Down
         Z_c = y_prime*cos_pitch + (z_prime-self.camera_height)*sin_pitch  # Depth, where camera is viewing
 
-        pixel_msg = Float32MultiArray() #Int32MultiArray()
+        pixel_msg = Int32MultiArray()
         u, v, x1, y1, x2, y2 = -1, -1, -1, -1, -1, -1
         # Project to image plane (pinhole camera model)
         #Z_c = -Z_c
@@ -334,23 +369,28 @@ class LincolnTest(Node):
 
             #Bounds check using image_width and image_height
             if not (0 < u < self.image_width and 0 < v < self.image_height):
-                pixel_msg.data = [x1, y1, x2, y2, self.rtk_lat, self. rtk_lon, self.rtk_heading]
+                pixel_msg.data = [x1, y1, x2, y2, self.count]
                 #self.get_logger().warn(f'Crack at (u={u:.2f}, v={v:.2f}) is outside image bounds (0,0,{self.image_width},{self.image_height})')
             else:
                 x1, x2, y1, y2 = self.get_box(u,v)
-                pixel_msg.data = [x1, y1, x2, y2, self.rtk_lat, self. rtk_lon, self.rtk_heading]
+                pixel_msg.data = [x1, y1, x2, y2, self.count]
 
         else:
             self.get_logger().warn('Crack is behind camera, cannot project')
-            pixel_msg.data = [x1, y1, x2, y2, self.rtk_lat, self. rtk_lon, self.rtk_heading]
+            pixel_msg.data = [x1, y1, x2, y2, self.count]
 
         # Publish pixel coordinates
+        self.count += 1
 
         self.pixel_pub.publish(pixel_msg)
         self.get_logger().info(f'Z_c: {Z_c}, Crack Pixel: u={u}, v={v} Border Values: x1={x1}, x2={x2}, y1={y1}, y2={y2}')
 
         # Please note that the origin of u,v lies on the top left of the image. u is increasing towards the right and v is increasing towards the bottom.
+        log_main_msg = f"Count:{self.count}, Lat:{self.rtk_lat}, Lon:{self.rtk_lon}, Heading: {self.rtk_heading},Border Values: x1={x1}, x2={x2}, y1={y1}, y2={y2}\n"
 
+        filename_send = os.path.join('data','main_log_' + self.ts_filename + '.txt')
+        with open(filename_send, "a") as log_file:
+            log_file.write(log_main_msg)
 
 if __name__ == '__main__':
 
@@ -368,6 +408,7 @@ if __name__ == '__main__':
     # receive_and_respond()
     # threading.Thread(target=receive_and_respond(), daemon=True).start()
 
+    # TODO: [CRH Question] what about making the OBU api as a separate node and handles the API?
     with create_cms_api(host='192.168.3.54') as api:
         rclpy.init()
         node = LincolnTest(api, args.acceleration, args.test_type, str(ts_filename)) #, crack_gps_lat, crack_gps_lon
