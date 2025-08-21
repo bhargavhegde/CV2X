@@ -34,7 +34,7 @@ logger.setLevel(logging.INFO)  # Default level, can be changed by main script
 if not logger.handlers:  # Avoid duplicate handlers
     handler = logging.StreamHandler()
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        '%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
     )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -133,6 +133,9 @@ class CameraModel:
         inputs !!!Important!!!:
                 world_point: 3D point in world coordinates (ENU)
             antenna_pos_world: GPS antenna position in world coordinates (ENU)
+                Note that this value does not need to be the absolute position;
+                for example, it can be [0,0,0], in which case the world point
+                returned will be relative to this position but still in the world frame (ENU).
             heading_deg: vehicle heading angle in degrees (0 = East, 90 = North, etc.)
                 camera orientation angles in vehicle body frame:
             yaw (Azimuth): rotation around body frame Z axis (up), positive is counter-clockwise or to the left
@@ -175,16 +178,19 @@ class CameraModel:
         # logger.debug(f"Projected image coordinates (homogeneous): {p_img_homog}")
         return p_img_homog[:2]
 
-    def camera_pixel_to_world(self, pixel_uv, distance_to_ground,
+    def camera_pixel_to_world(self, pixel_uv,
                               antenna_pos_world, heading_deg, yaw, pitch,
                               roll):
         """
         Convert camera pixel coordinates to world coordinates on the ground plane.
-
+        This function uses vehicle antenna position and camera relative position to calculate the world coordinates.
+        TODO: have a projection that uses solely the camera position/orientation and the pixel coordinates.
         Args:
             pixel_uv: [u,v] pixel coordinates in the image
-            distance_to_ground: height of the camera above ground in meters
-            antenna_pos_world: GPS antenna position in world coordinates (ENU)
+            antenna_pos_world: GPS antenna position in world coordinates (ENU).
+                Note that this value does not need to be the absolute position;
+                for example, it can be [0,0,0], in which case the world point
+                returned will be relative to this position but still in the world frame (ENU).
             heading_deg: vehicle heading in degrees (0=East, 90=North)
             yaw, pitch, roll: camera orientation angles in vehicle body frame
 
@@ -210,6 +216,7 @@ class CameraModel:
         ray_dir_world = R_total @ ray_dir_cam
 
         # 3. Get camera position in world coordinates
+        # antenna offset has height so no need consider height separately here.
         cam_pos_world = antenna_pos_world + R_heading @ self.gps_to_cam_offset_body
 
         # 4. Find intersection with ground plane (z = 0)
@@ -485,7 +492,11 @@ class CameraModel:
             max_dist = np.linalg.norm(world_points[:, :2] - antenna_pos_world[:2], axis=1).max()
         lane_max_dist = max(20.0, max_dist + 5.0)  # Add buffer for visualization
 
-        for offset in [- lane_width / 2, lane_width / 2]:
+        # Lists to store left and right lane image points
+        left_lane_img_pts = []
+        right_lane_img_pts = []
+        
+        for offset in [-lane_width / 2, lane_width / 2]:
             lane_start = antenna_pos_world + R_heading @ np.array([0.0, offset, -antenna_pos_world[2]])
             # Get maximum distance from antenna to target point in the heading direction
             target_dist = np.linalg.norm(world_points[:, :2] - antenna_pos_world[:2], axis=1).max()
@@ -506,6 +517,12 @@ class CameraModel:
             if len(lane_img_pts) > 1:
                 ax_img.plot(lane_img_pts[:, 0], lane_img_pts[:, 1],
                             color='gray', linestyle='--', linewidth=2, label='Lane Boundary' if offset == -lane_width / 2 else None)
+            # Store points for each lane separately
+            # note that the left and right lane projection may be behind the camera, when using it, need to filter out those beyond FOV
+            if offset == -lane_width / 2:
+                left_lane_img_pts = lane_img_pts
+            else:
+                right_lane_img_pts = lane_img_pts
 
             # Plot cross sections (perpendicular lines) along the lane centerline every ~5 meters
             cross_section_spacing = 5.0
@@ -542,82 +559,69 @@ class CameraModel:
         # verify crack size estimation algorithm using the pixel to world back - projection
         pixel_distance = 50
         # Sample points within the area surrounded by lane boundary image points
-        if len(lane_img_pts) > 0:
-            # Find points in the lower half of the image
-            valid_pts = lane_img_pts[lane_img_pts[:, 1] > self.intrinsics['cy']]
+        # Sampling crack points based on lane boundaries
+        if len(left_lane_img_pts) > 0 and len(right_lane_img_pts) > 0:
+            # Get y bounds for valid sampling region and cap at image boundaries
+            y_min = max(left_lane_img_pts[0, 1], right_lane_img_pts[0, 1])
+            y_max = min(left_lane_img_pts[-1, 1], right_lane_img_pts[-1, 1])
+            
+            # Cap at image boundaries (cy is center, so *2 gives full height/width)
+            y_min = max(0, min(y_min, self.intrinsics['cy'] * 2))
+            y_max = max(0, min(y_max, self.intrinsics['cy'] * 2))
 
-            if len(valid_pts) > 0:
-                # Get the convex hull of lane points to define sampling area
-                left_lane = valid_pts[valid_pts[:, 0] < self.intrinsics['cx']]
-                right_lane = valid_pts[valid_pts[:, 0] > self.intrinsics['cx']]
+            # Sample first point about 1/3 up from bottom
+            v1 = y_min + (y_max - y_min) * (2.0 / 3.0 * np.random.random() + 1.0 / 3.0)
 
-                if len(left_lane) > 0 and len(right_lane) > 0:
-                    # Sort points by y - coordinate
-                    left_lane = left_lane[left_lane[:, 1].argsort()]
-                    right_lane = right_lane[right_lane[:, 1].argsort()]
+            # Find closest y-values in both lanes
+            left_idx = np.searchsorted(left_lane_img_pts[:, 1], v1)
+            right_idx = np.searchsorted(right_lane_img_pts[:, 1], v1)
 
-                    # Get y bounds for valid sampling region
-                    y_min = max(left_lane[0, 1], right_lane[0, 1])
-                    y_max = min(left_lane[-1, 1], right_lane[-1, 1])
+            # Get x-coordinates at those indices
+            if left_idx >= len(left_lane_img_pts):
+                left_idx = len(left_lane_img_pts) - 1
+            if right_idx >= len(right_lane_img_pts):
+                right_idx = len(right_lane_img_pts) - 1
 
-                    # Sample first point about 1 / 3 up from bottom
-                    v1 = y_min + (y_max - y_min) * 0.33
+            left_x = max(0, min(left_lane_img_pts[left_idx, 0], self.intrinsics['cx'] * 2))
+            right_x = max(0, min(right_lane_img_pts[right_idx, 0], self.intrinsics['cx'] * 2))
 
-                    # Find closest y - values in both lanes
-                    left_idx = np.searchsorted(left_lane[:, 1], v1)
-                    right_idx = np.searchsorted(right_lane[:, 1], v1)
+            # Sample first point randomly between lane boundaries
+            u1 = left_x + (right_x - left_x) * np.random.random()
 
-                    # Get x - coordinates at those indices
-                    if left_idx >= len(left_lane):
-                        left_idx = len(left_lane) - 1
-                    if right_idx >= len(right_lane):
-                        right_idx = len(right_lane) - 1
+            # Sample second point in a circle with radius pixel_distance
+            angle = 2 * np.pi * np.random.random()
+            u2 = u1 + pixel_distance * np.cos(angle)
+            v2 = v1 + pixel_distance * np.sin(angle)
 
-                    left_x = left_lane[left_idx, 0]
-                    right_x = right_lane[right_idx, 0]
+            # Ensure second point stays within lane boundaries and image
+            v2 = max(0, min(v2, y_min))
+            v2 = min(v2, self.intrinsics['cy'] * 2)
 
-                    # Sample first point randomly between lane boundaries
-                    u1 = left_x + (right_x - left_x) * np.random.random()
+            # Find x bounds for second point
+            left_idx2 = np.searchsorted(left_lane_img_pts[:, 1], v2)
+            right_idx2 = np.searchsorted(right_lane_img_pts[:, 1], v2)
 
-                    # Sample second point pixel_distance higher in image
-                    # Sample second point in a circle with radius pixel_distance
-                    angle = 2 * np.pi * np.random.random()  # Random angle
-                    u2 = u1 + pixel_distance * np.cos(angle)
-                    v2 = v1 + pixel_distance * np.sin(angle)
+            if left_idx2 >= len(left_lane_img_pts):
+                left_idx2 = len(left_lane_img_pts) - 1
+            if right_idx2 >= len(right_lane_img_pts):
+                right_idx2 = len(right_lane_img_pts) - 1
 
-                    # Ensure the point stays within lane boundaries
-                    v2 = max(min(v2, y_min), y_max)  # Clamp v2 to valid y range
+            left_x2 = max(0, min(left_lane_img_pts[left_idx2, 0], self.intrinsics['cx'] * 2))
+            right_x2 = max(0, min(right_lane_img_pts[right_idx2, 0], self.intrinsics['cx'] * 2))
 
-                    # Find x bounds for second point
-                    left_idx2 = np.searchsorted(left_lane[:, 1], v2)
-                    right_idx2 = np.searchsorted(right_lane[:, 1], v2)
-
-                    if left_idx2 >= len(left_lane):
-                        left_idx2 = len(left_lane) - 1
-                    if right_idx2 >= len(right_lane):
-                        right_idx2 = len(right_lane) - 1
-
-                    left_x2 = left_lane[left_idx2, 0]
-                    right_x2 = right_lane[right_idx2, 0]
-
-                    u2 = left_x2 + (right_x2 - left_x2) * np.random.random()
-                else:
-                    # Fallback if lane boundaries not found
-                    u1 = self.intrinsics['cx']
-                    v1 = self.intrinsics['cy'] + 200
-                    u2 = u1
-                    v2 = v1 - 50
-            else:
-                # Fallback if no valid points
-                u1 = self.intrinsics['cx']
-                v1 = self.intrinsics['cy'] + 200
-                u2 = u1
-                v2 = v1 - 50
+            u2 = left_x2 + (right_x2 - left_x2) * np.random.random()
+            logger.info(f"Sampled crack points: ({u1:.2f}, {v1:.2f}) and ({u2:.2f}, {v2:.2f})")
+        else:
+            logger.info("No valid lane boundaries found for sampling crack points.")
+            # Fallback values
+            u1 = self.intrinsics['cx']
+            v1 = self.intrinsics['cy'] + 200
+            u2 = u1
+            v2 = v1 - 50
 
         # Back - project to world coordinates
         world_pt1 = self.camera_pixel_to_world(
             [u1, v1],
-            distance_to_ground=antenna_pos_world[2],
             antenna_pos_world=antenna_pos_world,
             heading_deg=heading_deg,
             yaw=yaw,
@@ -627,7 +631,6 @@ class CameraModel:
 
         world_pt2 = self.camera_pixel_to_world(
             [u2, v2],
-            distance_to_ground=antenna_pos_world[2],
             antenna_pos_world=antenna_pos_world,
             heading_deg=heading_deg,
             yaw=yaw,
@@ -709,7 +712,7 @@ if __name__ == "__main__":
 
     # TODO: generate a random world point from the camera field of view
     antenna_pos_world = np.array([0.0, 0.0, 1.3])  # GPS world coordinates in ENU
-    world_point = np.array([20.0, 0.0, 0.0])        # Target point on road
+    world_point = np.array([20.0 + 0.05 * np.random.uniform(-1, 1), 0.0, 0.0])        # Target point on road
 
     # Heading in degrees (counter clockwise is positive, 0 = East, 90 = North, etc.)
     # heading_deg = 0.0   # Facing east
@@ -738,6 +741,38 @@ if __name__ == "__main__":
     output_folder = os.path.join('samples', 'data', f'{base_folder}_{next_num:02d}')
     os.makedirs(output_folder, exist_ok=True)
 
+    # ---- example of how to use the model as quick test of projection and back-projection -----------
+    logger.info("\nTesting projection and back-projection:")
+    # First project world point to image
+    cam_coords = model.world_to_camera(world_point, antenna_pos_world, heading_deg,
+                                       yaw_in_body_frame, pitch_in_body_frame, roll_in_body_frame)
+    uv = model.project_point_to_image(cam_coords)
+    logger.info(f"World point {world_point} projects to image coordinates {uv}")
+    
+    # Then project back to world
+    world_point_back = model.camera_pixel_to_world(
+        uv,
+        antenna_pos_world=antenna_pos_world,
+        heading_deg=heading_deg,
+        yaw=yaw_in_body_frame,
+        pitch=pitch_in_body_frame,
+        roll=roll_in_body_frame
+    )
+    
+    # Compare results
+    if world_point_back is not None:
+        # remark: Using assert statements in production code is not recommended as they can be disabled with the -O flag.
+        # Consider using a proper exception like RuntimeError or converting this to a warning/error log message for production robustness.
+        # assert np.allclose(world_point[:2], world_point_back[:2], atol=1e-8), "Back-projected point does not match original point"
+        if not np.allclose(world_point[:2], world_point_back[:2], atol=1e-8):
+            logger.error("Back-projected point does not match original point")
+            raise RuntimeError("Back-projected point does not match original point")
+        error = np.linalg.norm(world_point - world_point_back)
+        logger.info(f"Back-projected world point: {world_point_back}")
+        logger.info(f"Projection error: {error:.8f} meters")
+
+    # -------------------------------------------------------------------------------------------------
+    
     # plot top view and image view comparison
     fig, ax_top, ax_img = model.plot_comparison_view(world_point, antenna_pos_world, heading_deg, yaw_in_body_frame, pitch_in_body_frame, roll_in_body_frame)
     fig.savefig(os.path.join(output_folder, 'top_view_vs_image_view.png'))

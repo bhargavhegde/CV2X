@@ -2,7 +2,8 @@
 # Unit tests for CameraModel class in camera_model.py
 Written with the help of Copilot. (Verified)
 run with
-python3 -m pytest test_camera_model.py
+python3 -m pytest # test all the test_xxx
+python3 -m pytest test_camera_model.py # test only on test_camera_model.py
 '''
 import logging
 import numpy as np
@@ -16,7 +17,7 @@ logger.setLevel(logging.INFO)
 if not logger.handlers:  # Avoid duplicate handlers
     handler = logging.StreamHandler()
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        '%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
     )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -197,7 +198,7 @@ def test_camera_pixel_to_world_consistency_with_projection(default_model):
         if pixel_coords is not None:
             # Now convert back from pixel to world
             reconstructed_world = default_model.camera_pixel_to_world(
-                pixel_coords, 1.5, antenna, heading, yaw, pitch, roll)
+                pixel_coords, antenna, heading, yaw, pitch, roll)
 
             logger.debug(f"Reconstructed world point: {reconstructed_world}")
 
