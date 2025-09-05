@@ -1,0 +1,16 @@
+{
+    "V2X_STACK_IP": "192.168.1.54", 
+    "send_image_psid": 200,
+    "receive_confirm_psid": 300,
+    "receive_feedback_psid": 400,
+    "receive_ready_psid": 201,
+    "chunk_size": 1024,
+    "cycle_timeout": 2,
+    "ready_timeout": 1,
+    "image_path": "rsu_av_app\frame_1750704066_18.png",
+    "crack_info": ", loc:3, test-12",
+    "gps_lat": 43.002831897548944,
+    "gps_lon": -78.78671042296428,
+    "logging_level": 0,
+    "send_image": true
+}

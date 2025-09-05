@@ -1,0 +1,567 @@
+"""
+RSU_API.py — Roadside Unit (RSU) handler for CV2X crack‑detection pipeline
+
+Module responsibilities:
+  1) Load runtime parameters from rsu_parameters.json.
+  2) Send either (A) chunked base64 image + metadata or (B) metadata‑only payloads to OBU via WSMP.
+  3) Receive feedback files (PNG/TXT) as chunked base64 and reconstruct/save to disk.
+  4) Track timing segments and save TXTlogs.
+  5) Passively log BSM (Facilities) messages to TXT for analysis.
+
+Key runtime flow (per cycle):
+  • Wait for OBU "ready" broadcast (with timeout).
+  • Depending on send_image flag, either send chunks or meta‑only.
+  • Await feedback queue completion or timeout.
+  • Log timing breakdown and advance to next cycle.
+
+Parameters (from rsu_parameters.json):
+  V2X_STACK_IP         — IP address of Commsignia stack (CMS) host.
+  send_image_psid      — PSID for RSU→OBU crack image/meta WSMP frames.
+  receive_confirm_psid — PSID to git rm Swapping_README.md
+git commit -m "remove Swapping_README.md as per review feedback"
+git push origin feature/rsu_av_app
+receive OBU confirmation that it received crack image.
+  receive_feedback_psid— PSID to receive OBU feedback (chunked PNG/TXT + completion signals).
+  receive_ready_psid   — PSID to receive OBU readiness beacons (status="ready").
+  chunk_size           — Base64 character window per chunk when sending or receiving.
+  cycle_timeout        — Max seconds to wait for queue_complete after sending.
+  ready_timeout        — Max seconds to wait for OBU ready before skipping cycle.
+  image_path           — Absolute path to source PNG for chunked send mode.
+  crack_info           — String metadata included with every chunk/meta‑only payload.
+  gps_lat/gps_lon      — GPS coordinates embedded in payload alongside crack_info.
+  logging_level        — Reserved (currently unused; logging config via basicConfig below).
+  send_image           — Boolean. True: send PNG chunks + meta. False: send meta‑only payload.
+
+Notes:
+  • File/folder naming mirrors existing pipeline; structure NOT altered.
+  • All timing calculations remain outside helper functions where already implemented.
+"""
+
+# ==========================
+# Standard Library Imports
+# ==========================
+import os
+import time
+import base64
+import json
+import csv
+import logging
+from collections import defaultdict
+from threading import Event
+
+# ==========================
+# Commsignia (pycmssdk) Imports
+# ==========================
+# These are specific to the Commsignia CMS/WSMP SDK. Do not rename.
+from pycmssdk import (
+    create_cms_api,            
+    WsmpSendData, WsmpTxHdrInfo,
+    RadioTxParams, MacAddr,
+    asn1_decode,               
+    SecDot2TxInfo, SecDot2TxSignInfo,
+    SignMethod, Asn1Type, FacMsgType,
+)
+
+
+class RSUHandler:
+    """High‑level coordinator for RSU runtime.
+
+    Bootstraps configuration, folders, log files; manages send/receive cycle;
+    subscribes to Facilities (BSM) and WSMP feedback; reconstructs feedback files;
+    """
+
+    def __init__(self, config_path="rsu_parameters.json"):
+        """Initialize configuration, directories, file handles, and in‑memory state.
+
+        Side effects:
+          • Reads rsu_parameters.json (path configurable via config_path argument).
+          • Creates output directories for logs and received feedback files.
+          • Prepares rotating TXT file names for rsu_sent, rsu_received, rsu_params, and BSM log.
+          • Initializes timing dictionaries and Event flags for cycle coordination.
+        """
+        # === CONFIGURATION ===
+        def load_parameters(path):
+            """Load JSON parameters from disk. Adjust default path per deployment."""
+            with open(path, 'r') as f:
+                return json.load(f)
+
+        config = load_parameters(config_path)
+        self._config_raw = config  # keep raw dict for parameter snapshot TXT
+
+        # --- Required config fields (fail fast if missing keys) ---
+        self.V2X_STACK_IP = config["V2X_STACK_IP"]
+        self.SEND_IMAGE_PSID = config["send_image_psid"]
+        self.RECEIVE_CONFIRM_PSID = config["receive_confirm_psid"]
+        self.RECEIVE_FEEDBACK_PSID = config["receive_feedback_psid"]
+        self.RECEIVE_READY_PSID = config["receive_ready_psid"]
+        self.CHUNK_SIZE = config["chunk_size"]
+        self.CYCLE_TIMEOUT = config["cycle_timeout"]
+        self.READY_TIMEOUT = config["ready_timeout"]
+        self.IMAGE_PATH = config["image_path"]
+        self.CRACK_INFO = config["crack_info"]
+        self.GPS_LAT = config.get("gps_lat")
+        self.GPS_LON = config.get("gps_lon")
+
+        # === MODE FLAG (JSON‑driven) ===
+        # True → send image chunks + meta. False → send metadata only.
+        self.SEND_IMAGE = config.get("send_image", True)
+
+        # === DIRECTORY SETUP ===
+        # Versioned output folders to avoid overwriting previous tests.
+        self.RSU_LOG_DIR = "rsu_logs_v4"
+        self.RECEIVED_FB_DIR = "rsu_received_feedback_v4"
+        os.makedirs(self.RSU_LOG_DIR, exist_ok=True)
+        os.makedirs(self.RECEIVED_FB_DIR, exist_ok=True)
+
+        # Rotating file names (TXT/CSV) for each run.
+        self.rsu_sent_log = self.get_next_log_filename("rsu_sent", "txt")
+        self.rsu_received_log = self.get_next_log_filename("rsu_received", "txt")
+
+        # === PARAM SNAPSHOT (TXT only) ===
+        self.rsu_params_txt = self.get_next_log_filename("rsu_params", "txt")
+        self._write_param_snapshot()
+
+        # === BSM LOGGING: TXT ONLY ===
+        self.bsm_txt_path = self.get_next_log_filename("rsu_received_bsm", "txt")
+
+        # === In‑memory receive buffers and timing ===
+        # feedback_chunks[image_id][file_type][chunk_idx] -> base64 str
+        self.feedback_chunks = defaultdict(lambda: defaultdict(dict))
+        self.feedback_total_chunks = {}
+        self.feedback_start_time = {}
+        self.ready_received = Event()
+        self.queue_complete_received = Event()
+        self.cycle_counter = 1
+        self.send_start_time = 0
+        self.image_id = ""
+        self.tag = ""
+        self.prev_cycle_start_time = None
+        self.prev_cycle_end_time = None
+        self.cycle_timing = {}
+
+        # Basic logging config; adjust level as needed.
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+    # ----------------------------
+    # Small Utilities
+    # ----------------------------
+    def timestamp(self) -> int:
+        """Return current epoch time in milliseconds as int."""
+        return int(time.time() * 1000)
+
+    def get_next_log_filename(self, base_name: str, extension: str = "csv") -> str:
+        """Generate next numbered log filename inside RSU_LOG_DIR to avoid overwrite."""
+        i = 1
+        while os.path.exists(os.path.join(self.RSU_LOG_DIR, f"{base_name}_{i}.{extension}")):
+            i += 1
+        return os.path.join(self.RSU_LOG_DIR, f"{base_name}_{i}.{extension}")
+
+    def write_csv(self, path: str, headers: list, row: list) -> None:
+        """Append a row to a tab‑delimited file; create header if file is new."""
+        file_exists = os.path.exists(path)
+        with open(path, 'a', newline='') as f:
+            writer = csv.writer(f, delimiter='\t')
+            if not file_exists:
+                writer.writerow(headers)
+            writer.writerow(row)
+
+    def write_txt_line(self, path: str, fields: list, values: list) -> None:
+        """Append a single human‑readable line: key1=val1, key2=val2, ...
+
+        Used for rsu_sent_#.txt and meta‑only markers for quick manual inspection.
+        """
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        line = ", ".join(f"{k}={v}" for k, v in zip(fields, values)) + "\n"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+
+    def _write_param_snapshot(self) -> None:
+        """Write a TXT snapshot of the loaded JSON parameters for provenance.
+
+        Helpful when tuning values over time; you can always recover which params
+        were active for a given test run.
+        """
+        try:
+            with open(self.rsu_params_txt, "w", encoding="utf-8") as f:
+                f.write("=== RSU Parameter Snapshot ===\n")
+                f.write(f"created_at_ms: {self.timestamp()}\n\n")
+                for k in sorted(self._config_raw.keys()):
+                    v = self._config_raw[k]
+                    f.write(f"{k}: {v}\n")
+            logging.info(f"[RSU] Parameter snapshot saved: {self.rsu_params_txt}")
+        except Exception as e:
+            logging.error(f"[RSU] Failed to write parameter snapshot: {e}")
+
+    # ----------------------------
+    # Outbound Path (RSU → OBU)
+    # ----------------------------
+    def chunk_image(self, image_path: str, image_id: str) -> list:
+        """Read PNG from disk, base64‑encode, and split into fixed‑size chunks.
+
+        Args:
+          image_path: Absolute path to PNG to send.
+          image_id:   Unique cycle identifier used to key timing/logs.
+
+        Returns:
+          List[str]: Sequence of base64 chunks (length CHUNK_SIZE each, except last).
+
+        Side effects:
+          Updates self.cycle_timing[image_id]["rsu_chunk_time"].
+        """
+        chunk_start = self.timestamp()
+        with open(image_path, "rb") as f:
+            b64_data = base64.b64encode(f.read()).decode("utf-8")
+        chunks = [b64_data[i:i+self.CHUNK_SIZE] for i in range(0, len(b64_data), self.CHUNK_SIZE)]
+        chunk_end = self.timestamp()
+        self.cycle_timing[image_id]["rsu_chunk_time"] = chunk_end - chunk_start
+        return chunks
+
+    def send_chunks(self, api, chunks: list, image_id: str) -> None:
+        """Transmit base64 chunks to OBU with metadata, then signal send_complete.
+
+        Args:
+          api:      Active CMS API handle from create_cms_api().
+          chunks:   List of base64 strings produced by chunk_image().
+          image_id: Unique cycle identifier.
+
+        Side effects:
+          • Sends WSMP frames for every chunk.
+          • Writes per‑chunk TXT rows to rsu_sent_#.txt.
+          • Updates rsu_sending_time and rsu_send_complete_time in timing dict.
+        """
+        # Prepare common WSMP TX header + security once for all chunks.
+        self.send_start_time = self.timestamp()
+        self.cycle_timing[image_id]["rsu_sending_start_time"] = self.send_start_time
+
+        send_data = WsmpSendData(
+            radio=RadioTxParams(
+                interface_id=1,
+                dest_address=MacAddr(0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF),  # broadcast
+                datarate=6,
+                tx_power=20,
+                expiry_time=1000,
+            ),
+            wsmp_hdr=WsmpTxHdrInfo(psid=self.SEND_IMAGE_PSID),
+            security=SecDot2TxInfo(sign_info=SecDot2TxSignInfo(SignMethod.SIGN_METH_SIGN_CERT, self.SEND_IMAGE_PSID)),
+        )
+
+        # Send all chunks; log minimal but sufficient details per chunk.
+        for i, chunk in enumerate(chunks):
+            payload = {
+                "image_id": image_id,
+                "chunk_number": i,
+                "total_chunks": len(chunks),
+                "data": chunk,
+                "crack_info": self.CRACK_INFO,
+                "lat": self.GPS_LAT,
+                "lon": self.GPS_LON,
+            }
+            api.wsmp_send(send_data, buffer=json.dumps(payload).encode("utf-8"))
+            logging.info(f"[RSU] Sent chunk {i+1}/{len(chunks)} for {image_id}")
+
+            # Human‑readable TXT row for fast inspection.
+            self.write_txt_line(
+                self.rsu_sent_log,
+                ["image_id", "chunk_number", "total_chunks", "send_time", "crack_info", "lat", "lon"],
+                [image_id, i, len(chunks), self.timestamp(), self.CRACK_INFO, self.GPS_LAT, self.GPS_LON],
+            )
+            time.sleep(0.005)  # short pacing to avoid burst saturation
+
+        # Record aggregate sending time.
+        sending_end = self.timestamp()
+        self.cycle_timing[image_id]["rsu_sending_time"] = sending_end - self.send_start_time
+
+        # Send a final marker so OBU knows image payload is complete.
+        complete_payload = {"type": "send_complete", "image_id": image_id, "send_complete_time": sending_end}
+        api.wsmp_send(send_data, buffer=json.dumps(complete_payload).encode("utf-8"))
+
+        # Also mark completion in TXT for human readers.
+        self.write_txt_line(
+            self.rsu_sent_log,
+            ["image_id", "chunk_number", "total_chunks", "send_time", "crack_info", "lat", "lon"],
+            [image_id, "COMPLETE", len(chunks), sending_end, self.CRACK_INFO, self.GPS_LAT, self.GPS_LON],
+        )
+
+        # Timing point to indicate we emitted completion (used in some analyses).
+        self.cycle_timing[image_id]["rsu_send_complete_time"] = self.timestamp() - sending_end
+
+    def send_meta_only(self, api, image_id: str) -> None:
+        """Send metadata‑only payload to OBU (no PNG chunks).
+
+        Use when testing feedback path without image transfer, or for very low bandwidth trials.
+        """
+        send_data = WsmpSendData(
+            radio=RadioTxParams(interface_id=1, dest_address=MacAddr(0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF), datarate=6, tx_power=20, expiry_time=1000),# checked working
+            wsmp_hdr=WsmpTxHdrInfo(psid=self.SEND_IMAGE_PSID),
+            security=SecDot2TxInfo(sign_info=SecDot2TxSignInfo(SignMethod.SIGN_METH_SIGN_CERT, self.SEND_IMAGE_PSID)),
+        )
+        send_ts = self.timestamp()
+        payload = {
+            "type": "meta_only",
+            "image_id": image_id,
+            "crack_info": self.CRACK_INFO,
+            "lat": self.GPS_LAT,
+            "lon": self.GPS_LON,
+            "send_time": send_ts,
+        }
+        api.wsmp_send(send_data, buffer=json.dumps(payload).encode("utf-8"))
+        logging.info(f"[RSU] Sent META_ONLY for {image_id} (lat={self.GPS_LAT}, lon={self.GPS_LON}, crack='{self.CRACK_INFO}')")
+
+        # TXT markers for quick inspection.
+        self.write_txt_line(
+            self.rsu_sent_log,
+            ["image_id", "type", "time", "crack_info", "lat", "lon"],
+            [image_id, "META_ONLY", send_ts, self.CRACK_INFO, self.GPS_LAT, self.GPS_LON],
+        )
+        self.write_txt_line(
+            self.rsu_sent_log,
+            ["image_id", "type", "time", "crack_info", "lat", "lon"],
+            [image_id, "COMPLETE_META", self.timestamp(), self.CRACK_INFO, self.GPS_LAT, self.GPS_LON],
+        )
+
+    # ----------------------------
+    # Inbound Path (OBU → RSU)
+    # ----------------------------
+    def send_detection_request(self, buffer: bytes, tag: str) -> None:
+        """Unified handler for feedback channel.
+
+        Accepts:
+          • Chunked feedback frames (file_type ∈ {"png", "txt"}) with data/ordering indices.
+          • feedback_complete marker for a given image_id.
+          • queue_complete marker indicating the end of multi‑image feedback queue.
+
+        Side effects:
+          • Reconstructs and saves full feedback files when last chunk arrives.
+          • Updates timing metrics for feedback delay and logging time.
+          • Sets queue_complete_received Event for main loop continuation.
+        """
+        try:
+            msg = json.loads(buffer.decode("utf-8"))
+
+            # Final queue completion marker (end of all images for this cycle)
+            if msg.get("type") == "queue_complete":
+                logging.info("[RSU] Received queue_complete from OBU.")
+                self.queue_complete_received.set()
+                return
+
+            # Completion marker for a single image's feedback set (png/txt complete on OBU side)
+            if msg.get("type") == "feedback_complete":
+                image_id = msg.get("image_id", "")
+                recv_time = self.timestamp()
+                feedback_sent_time = msg.get("feedback_send_time", "")
+                if image_id not in self.cycle_timing:
+                    image_id = self.image_id  # fallback to current image_id if OBU omitted
+                start_ts = self.cycle_timing.get(image_id, {}).get("rsu_cycle_start_time", recv_time)
+                total_cycle_time = recv_time - start_ts
+                self.cycle_timing.setdefault(image_id, {})["total_cycle_log_time"] = total_cycle_time
+                self.write_csv(
+                    self.rsu_received_log,
+                    ["image_id", "chunk_number", "recv_time", "file_type", "feedback_sent_time", "total_cycle_log_time"],
+                    [image_id, "FEEDBACK_DONE", recv_time, "", feedback_sent_time, total_cycle_time],
+                )
+                logging.info(f"[RSU] Received feedback_complete for {image_id}")
+                return
+
+            # Otherwise, expect chunked feedback payload for a specific file type.
+            image_id = msg["image_id"]
+            chunk_num = msg["chunk_number"]
+            total = msg["total_chunks"]
+            data = msg["data"]
+            file_type = msg["file_type"]  # "png" or "txt"
+
+            # First feedback chunk: record delay relative to RSU send start.
+            if image_id not in self.feedback_start_time:
+                self.feedback_start_time[image_id] = self.timestamp()
+                base = self.cycle_timing.get(image_id, {}).get("rsu_sending_start_time", self.feedback_start_time[image_id])
+                self.cycle_timing.setdefault(image_id, {})["rsu_sending_start_time"] = base
+                self.cycle_timing[image_id]["rsu_feedback_delay"] = self.feedback_start_time[image_id] - base
+
+            # Accumulate chunk by index; wait until we have the full set for this file_type.
+            self.feedback_chunks[image_id][file_type][chunk_num] = data
+            if len(self.feedback_chunks[image_id][file_type]) == total:
+                # Concatenate in numeric order to reconstruct the base64 payload.
+                output = ''.join(self.feedback_chunks[image_id][file_type][i] for i in range(total))
+                ext = "png" if file_type == "png" else "txt"
+
+                # Build path: rsu_received_feedback_v4/logX/TestY/<file_type>_<cycle>_<send_time>.<ext>
+                parts = image_id.split("_")
+                cycle = parts[1] if len(parts) > 1 else "X"
+                send_time = parts[2] if len(parts) > 2 else str(self.timestamp())
+                log_version = os.path.basename(self.rsu_received_log).split("_")[-1].split(".")[0]
+                test_dir = os.path.join(self.RECEIVED_FB_DIR, f"log{log_version}", f"Test{cycle}")
+                os.makedirs(test_dir, exist_ok=True)
+                filepath = os.path.join(test_dir, f"{file_type}_{cycle}_{send_time}.{ext}")
+
+                # Write out reconstructed file; measure logging latency for analysis.
+                log_start = self.timestamp()
+                with open(filepath, "wb" if file_type == "png" else "w") as f:
+                    if file_type == "png":
+                        f.write(base64.b64decode(output))
+                    else:
+                        f.write(base64.b64decode(output).decode("utf-8"))
+                log_end = self.timestamp()
+                self.cycle_timing[image_id]["rsu_logging_time"] = log_end - log_start
+
+        except Exception as e:
+            logging.error(f"[RSU] Feedback error: {e}")
+
+    def handle_ready(self, buffer: bytes) -> None:
+        """Handle OBU readiness message: set Event so main loop may proceed."""
+        try:
+            msg = json.loads(buffer.decode("utf-8"))
+            if msg.get("status") == "ready":
+                self.ready_received.set()
+                logging.info("[RSU] OBU ready received")
+        except Exception:
+            # Ignore malformed or non‑JSON frames on the ready channel.
+            pass
+
+    def handle_confirmation(self, buffer: bytes, image_id: str) -> None:
+        """Handle OBU confirmation that it has received the crack image."""
+        try:
+            msg = json.loads(buffer.decode("utf-8"))
+            if msg.get("image_received") and msg.get("image_id") == image_id:
+                logging.info(f"[RSU] Image {image_id} confirmed by OBU")
+        except Exception as e:
+            logging.error(f"[RSU] Confirm error: {e}")
+
+    # ----------------------------
+    # Facilities (BSM) Logging
+    # ----------------------------
+    def log_bsm_txt(self, line: str) -> None:
+        """Append a raw, human‑readable BSM line to rsu_received_bsm_#.txt."""
+        try:
+            with open(self.bsm_txt_path, "a", encoding="utf-8") as f:
+                f.write(line.rstrip() + "\n")
+        except Exception as e:
+            logging.error(f"BSM TXT write error: {e}")
+
+    def handle_fac_bsm(self, *args) -> None:
+        """Facilities BSM callback that tolerates SDK signature variants.
+
+        Supported shapes observed in pycmssdk:
+          • (key:int, data:FacNotifData, buffer:bytes)
+          • (data:FacNotifData, buffer:bytes)
+        We extract the bytes buffer and attempt to decode US_MESSAGE_FRAME → coreData.
+        If decoding fails (e.g., secured/unsupported frame), we skip silently.
+        """
+        ts = time.time()
+
+        # Unify the receive buffer from common callback shapes.
+        if len(args) == 3:
+            _, _, buffer = args  # (key, data, buffer)
+        elif len(args) == 2:
+            _, buffer = args     # (data, buffer)
+        else:
+            return               # Unexpected shape; do nothing.
+
+        raw = buffer if isinstance(buffer, (bytes, bytearray)) else b""
+        if not raw:
+            return
+
+        try:
+            mf = asn1_decode(raw, Asn1Type.US_MESSAGE_FRAME)
+            # Access coreData for BSM v2; structure is SDK/version‑dependent.
+            cd = mf["value"][1]["coreData"]
+
+            temp_id     = cd.get("id", b"")
+            temp_id     = temp_id.hex() if isinstance(temp_id, (bytes, bytearray)) else temp_id
+            lat_deg     = cd.get("lat")
+            lon_deg     = cd.get("long")
+            speed_mps   = (cd.get("speed")   / 50.0) if isinstance(cd.get("speed"), (int, float)) else None
+            heading_deg = (cd.get("heading") / 80.0) if isinstance(cd.get("heading"), (int, float)) else None
+
+            # Human‑readable line (TXT only) for quick inspection.
+            self.log_bsm_txt(
+                f"{ts:.3f} FAC temp_id={temp_id} lat={lat_deg} lon={lon_deg} "
+                f"speed={speed_mps} heading={heading_deg}"
+            )
+
+        except Exception:
+            # If decode fails, quietly skip; some frames may be secured or non‑BSM.
+            return
+
+    # ----------------------------
+    # Main Runtime Loop
+    # ----------------------------
+    def run(self) -> None:
+        """Entry point: establish CMS connection, subscribe to channels, and loop cycles.
+
+        Subscriptions:
+          • Facilities BSM → handle_fac_bsm
+          • RSU feedback channel (RECEIVE_FEEDBACK_PSID) → send_detection_request
+          • OBU confirmation channel (RECEIVE_CONFIRM_PSID) → handle_confirmation
+          • OBU readiness channel (RECEIVE_READY_PSID) → handle_ready
+        """
+        with create_cms_api(host=self.V2X_STACK_IP) as api:
+            # --- Facilities BSM subscription (single preferred path) ---
+            try:
+                if hasattr(api, "fac_subscribe"):
+                    api.fac_subscribe(FacMsgType.FAC_MSG_US_BSM, self.handle_fac_bsm)
+                    logging.info("[RSU] Subscribed to Facilities BSM via fac_subscribe(FAC_MSG_US_BSM).")
+                else:
+                    # If your SDK truly doesn't have fac_subscribe, consider this fallback:
+                    # api.facilities_subscribe(FacMsgType.FAC_MSG_US_BSM, self.handle_fac_bsm)
+                    raise AttributeError("SDK has no fac_subscribe; add fallback if needed.")
+            except Exception as e:
+                logging.warning(f"[RSU] Facilities BSM subscribe failed: {e}")
+
+            # --- Subscribe to OBU→RSU WSMP channels ---
+            api.wsmp_rx_subscribe(self.RECEIVE_FEEDBACK_PSID, lambda _, __, b: self.send_detection_request(b, self.tag))
+            api.wsmp_rx_subscribe(self.RECEIVE_CONFIRM_PSID, lambda _, __, b: self.handle_confirmation(b, self.image_id))
+            api.wsmp_rx_subscribe(self.RECEIVE_READY_PSID,  lambda _, __, b: self.handle_ready(b))
+
+            # --- Cycle loop: one image/meta request per cycle ---
+            while True:
+                cycle_timestamp = self.timestamp()
+                self.image_id = f"img_{self.cycle_counter}_{cycle_timestamp}"
+                self.tag = f"Test{self.cycle_counter}"
+
+                # Reset per‑cycle Events and timing dict.
+                self.ready_received.clear()
+                self.queue_complete_received.clear()
+                cycle_start_time = self.timestamp()
+                self.cycle_timing[self.image_id] = {"rsu_cycle_start_time": cycle_start_time}
+
+                # Optional visibility: previous cycle duration (logged once per new cycle)
+                if self.prev_cycle_start_time and self.prev_cycle_end_time:
+                    duration = cycle_start_time - self.prev_cycle_start_time
+                    self.write_csv(self.rsu_received_log, ["image_id", "prev_cycle_duration"], ["PREV", duration])
+                self.prev_cycle_start_time = cycle_start_time
+
+                # Wait for OBU readiness (with timeout)
+                logging.info(f"[RSU] Waiting for OBU readiness before {self.tag}")
+                wait_start_ts = self.timestamp()
+                start_wait = time.time()
+                while not self.ready_received.is_set() and (time.time() - start_wait < self.READY_TIMEOUT):
+                    time.sleep(0.01)
+                self.cycle_timing[self.image_id]["rsu_wait_ready"] = self.timestamp() - wait_start_ts
+
+                # If no ready signal within timeout, skip this cycle cleanly.
+                if not self.ready_received.is_set():
+                    logging.warning("[RSU] No ready signal. Skipping this cycle.")
+                    continue
+
+                # === Mode switch ===
+                if self.SEND_IMAGE:
+                    # Send full image as base64 chunks.
+                    chunks = self.chunk_image(self.IMAGE_PATH, self.image_id)
+                    self.send_chunks(api, chunks, self.image_id)
+                else:
+                    # Send only metadata for the current image_id.
+                    self.send_meta_only(api, self.image_id)
+
+                self.prev_cycle_end_time = self.timestamp()
+
+                # Wait for the end of OBU feedback queue or timeout the cycle.
+                wait_start = time.time()
+                while not self.queue_complete_received.is_set() and (time.time() - wait_start < self.CYCLE_TIMEOUT):
+                    time.sleep(0.05)
+
+                logging.info(f"[RSU] Cycle {self.cycle_counter} complete\n")
+                self.cycle_counter += 1
+                time.sleep(0.1)  # small gap to avoid tight looping
+
+
+if __name__ == "__main__":
+    RSUHandler().run()
