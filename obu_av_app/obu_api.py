@@ -1,11 +1,11 @@
 #! /usr/bin/env python3
 
-'''
-    Description: On-Board Unit (OBU) API for V2X communication, 
-    handling image chunk reception, confirmation, and feedback.
-    Author: Rishabh Shukla
-    Date: June 27, 2025
-'''
+"""
+Description: On-Board Unit (OBU) API for V2X communication,
+handling image chunk reception, confirmation, and feedback.
+Author: Rishabh Shukla
+Date: June 27, 2025
+"""
 
 # Standard library imports
 import base64
@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import queue
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -35,9 +36,16 @@ from pycmssdk import ( # noqa: F401
 # Local imports
 # None
 
+# Global Variables for getting GPS
+# global gps_crack_lat, gps_crack_lon
+
+gps_crack_lat = 500
+gps_crack_lon = 500
+lock = threading.Lock()
+
 
 class OBUHandler:
-    def __init__(self, image_queue): #, image_queue, gps_crack_lat, gps_crack_lon
+    def __init__(self, image_queue, test_num): #, image_queue, gps_crack_lat, gps_crack_lon
         # Configuration
         self.v2x_stack_ip = "192.168.3.54"
         self.receive_image_psid = 200
@@ -46,9 +54,9 @@ class OBUHandler:
         self.send_ready_psid = 201
         self.chunk_size = 1024
         self.ready_interval = 0.05
-        self.cycle_timeout = 5
+        self.cycle_timeout = 2
         self.feedback_image_path = r"data/latest/picture.png"
-        self.feedback_text_path = r"data/latest_new/check_file.txt"
+        
 
         self.image_chunks = defaultdict(dict)
         self.image_chunk_total = {}
@@ -65,6 +73,7 @@ class OBUHandler:
 
         # Shared variables
         self.image_queue = image_queue
+        self.test_num = test_num
         # self.crack_lat = gps_crack_lat
         # self.crack_lon = gps_crack_lon
 
@@ -89,14 +98,25 @@ class OBUHandler:
 
     def send_ready_loop(self):
         def loop():
-            # TODO: [CRH Question] Should we use the API here or pass it as an argument?
             with create_cms_api(host=self.v2x_stack_ip) as api:
-                packet = json.dumps({"obu_id": "OBU_XYZ", "status": "ready"}).encode("utf-8")
+                packet = json.dumps(
+                    {"obu_id": "OBU_XYZ", "status": "ready"}
+                ).encode("utf-8")
                 send_data = WsmpSendData(
-                    radio=RadioTxParams(interface_id=1, dest_address=MacAddr(0xFF,) * 6, datarate=6,
-                                        tx_power=20, expiry_time=1000),
+                    radio=RadioTxParams(
+                        interface_id=1,
+                        dest_address=MacAddr(0xFF,) * 6,
+                        datarate=6,
+                        tx_power=20,
+                        expiry_time=1000
+                    ),
                     wsmp_hdr=WsmpTxHdrInfo(psid=self.send_ready_psid),
-                    security=SecDot2TxInfo(sign_info=SecDot2TxSignInfo(SignMethod.SIGN_METH_SIGN_CERT, self.send_ready_psid))
+                    security=SecDot2TxInfo(
+                        sign_info=SecDot2TxSignInfo(
+                            SignMethod.SIGN_METH_SIGN_CERT,
+                            self.send_ready_psid
+                        )
+                    )
                 )
                 while True:
                     if not self.ready_flag.is_set():
@@ -131,10 +151,20 @@ class OBUHandler:
     def send_confirmation(self, api, image_id):
         payload = {"image_received": True, "image_id": image_id}
         send_data = WsmpSendData(
-            radio=RadioTxParams(interface_id=1, dest_address=MacAddr(0xFF,) * 6, datarate=6,
-                                tx_power=20, expiry_time=1000),
+            radio=RadioTxParams(
+                interface_id=1,
+                dest_address=MacAddr(0xFF,) * 6,
+                datarate=6,
+                tx_power=20,
+                expiry_time=1000
+            ),
             wsmp_hdr=WsmpTxHdrInfo(psid=self.send_confirm_psid),
-            security=SecDot2TxInfo(sign_info=SecDot2TxSignInfo(SignMethod.SIGN_METH_SIGN_CERT, self.send_confirm_psid))
+            security=SecDot2TxInfo(
+                sign_info=SecDot2TxSignInfo(
+                    SignMethod.SIGN_METH_SIGN_CERT,
+                    self.send_confirm_psid
+                )
+            )
         )
         api.wsmp_send(send_data, buffer=json.dumps(payload).encode("utf-8"))
         logging.info(f"[OBU] Sent confirmation for {image_id}")
@@ -144,19 +174,36 @@ class OBUHandler:
             return base64.b64encode(f.read()).decode("utf-8")
 
     def send_feedback(self, api, image_id, send_type):
-        img_path = "masks/" + str(self.image_queue.get())
-        print("Current Image: ",img_path, "------------------------------------------------------------------------------")
-        img_data = self.encode_feedback_file(img_path) #self.image_queue.get()
-        txt_data = self.encode_feedback_file(self.feedback_text_path)
+        img_path = (
+            f"data/Test_{self.test_num}/Image_Folder/masks/"
+            + str(self.image_queue.get())
+        )
+        print(
+            "Current Image: ", img_path,
+            "------------------------------------------------------------------------------"
+        )
+        img_data = self.encode_feedback_file(img_path)
 
-        feedback_img_chunks = [img_data[i:i+self.chunk_size] for i in range(0, len(img_data), self.chunk_size)]
-        feedback_txt_chunks = [txt_data[i:i+self.chunk_size] for i in range(0, len(txt_data), self.chunk_size)]
+        feedback_img_chunks = [
+            img_data[i:i + self.chunk_size]
+            for i in range(0, len(img_data), self.chunk_size)
+        ]
 
         send_data = WsmpSendData(
-            radio=RadioTxParams(interface_id=1, dest_address=MacAddr(0xFF,) * 6, datarate=6,
-                                tx_power=20, expiry_time=1000),
+            radio=RadioTxParams(
+                interface_id=1,
+                dest_address=MacAddr(0xFF,) * 6,
+                datarate=6,
+                tx_power=20,
+                expiry_time=1000
+            ),
             wsmp_hdr=WsmpTxHdrInfo(psid=self.send_feedback_psid),
-            security=SecDot2TxInfo(sign_info=SecDot2TxSignInfo(SignMethod.SIGN_METH_SIGN_CERT, self.send_feedback_psid))
+            security=SecDot2TxInfo(
+                sign_info=SecDot2TxSignInfo(
+                    SignMethod.SIGN_METH_SIGN_CERT,
+                    self.send_feedback_psid
+                )
+            )
         )
 
         for idx, chunk in enumerate(feedback_img_chunks):
@@ -168,25 +215,14 @@ class OBUHandler:
                 "file_type": "png"
             }
             api.wsmp_send(send_data, buffer=json.dumps(payload).encode("utf-8"))
-            self.write_csv(self.obu_sent_log,
-                           ["image_id", "chunk_number", "total_chunks", "send_time", "file_type"],
-                           [image_id, idx, len(feedback_img_chunks), self.timestamp(), "png"])
-            logging.info(f"[OBU] Sent feedback PNG chunk {idx+1}/{len(feedback_img_chunks)}")
-            time.sleep(0.01)
-
-        for idx, chunk in enumerate(feedback_txt_chunks):
-            payload = {
-                "image_id": image_id,
-                "chunk_number": idx,
-                "total_chunks": len(feedback_txt_chunks),
-                "data": chunk,
-                "file_type": "txt"
-            }
-            api.wsmp_send(send_data, buffer=json.dumps(payload).encode("utf-8"))
-            self.write_csv(self.obu_sent_log,
-                           ["image_id", "chunk_number", "total_chunks", "send_time", "file_type"],
-                           [image_id, idx, len(feedback_txt_chunks), self.timestamp(), "txt"])
-            logging.info(f"[OBU] Sent feedback TXT chunk {idx+1}/{len(feedback_txt_chunks)}")
+            self.write_csv(
+                self.obu_sent_log,
+                ["image_id", "chunk_number", "total_chunks", "send_time", "file_type"],
+                [image_id, idx, len(feedback_img_chunks), self.timestamp(), "png"]
+            )
+            logging.info(
+                f"[OBU] Sent feedback PNG chunk {idx + 1}/{len(feedback_img_chunks)}"
+            )
             time.sleep(0.01)
 
         feedback_done_payload = {
@@ -196,18 +232,53 @@ class OBUHandler:
         }
         api.wsmp_send(send_data, buffer=json.dumps(feedback_done_payload).encode("utf-8"))
         logging.info(f"[OBU] Sent feedback_complete for {image_id}")
-        logging.info(f"[OBU] Feedback send complete: {len(feedback_img_chunks)} PNG chunks, {len(feedback_txt_chunks)} TXT chunks.")
+        logging.info(
+            f"[OBU] Feedback send complete: {len(feedback_img_chunks)} PNG chunks."
+        )
 
     def handle_chunk(self, buffer):
+        # print("Handle Chunk is working...")
         try:
             msg = json.loads(buffer.decode("utf-8"))
+
+            global gps_crack_lat, gps_crack_lon
+
+            if msg.get("type") == "meta_only":
+                image_id = msg["image_id"]
+                crack_info = msg.get("crack_info", "")
+                gps_crack_lat = msg.get("lat")
+                gps_crack_lon = msg.get("lon")
+                # Log a row with chunk_number marked as META_ONLY to keep CSV schema stable
+                self.write_csv(
+                    self.obu_received_log,
+                    ["image_id", "chunk_number", "total_chunks", "recv_time", "file_type", "rsu_send_time", "crack_info"],
+                    [image_id, "META_ONLY", "", self.timestamp(), "", msg.get("send_time", ""), crack_info]
+                )
+                logging.info(
+                    f"[OBU] Meta-only detection request received for {image_id} (lat={gps_crack_lat}, lon={gps_crack_lon})"
+                )
+                # Send confirmation and then send feedback queue (reuses existing path)
+                with create_cms_api(host=self.v2x_stack_ip) as api:
+                    self.send_confirmation(api, image_id)
+                    if not self.image_queue.empty():
+                        send_type = "feedback_complete"
+                        if self.image_queue.qsize() == 1:
+                            send_type = "queue_complete"
+                        self.send_feedback(api, image_id, send_type)
+                    else:
+                        logging.info("[OBU] Meta-only request received, but feedback queue is empty.")
+                self.ready_flag.clear()
+                print("Returning from here----------------------------------------")
+                return
 
             if msg.get("type") == "send_complete":
                 image_id = msg["image_id"]
                 send_time = msg["send_complete_time"]
-                self.write_csv(self.obu_received_log,
-                               ["image_id", "chunk_number", "total_chunks", "recv_time", "file_type", "rsu_send_time", "crack_info"],
-                               [image_id, "RSU_DONE", "", self.timestamp(), "", send_time, ""])
+                self.write_csv(
+                    self.obu_received_log,
+                    ["image_id", "chunk_number", "total_chunks", "recv_time", "file_type", "rsu_send_time", "crack_info"],
+                    [image_id, "RSU_DONE", "", self.timestamp(), "", send_time, ""]
+                )
                 logging.info(f"[OBU] Logged RSU send_complete for {image_id}")
                 return
 
@@ -215,18 +286,27 @@ class OBUHandler:
             chunk_num = msg["chunk_number"]
             total = msg["total_chunks"]
             data = msg["data"]
-            gps_crack_lat = msg["lat"]
-            gps_crack_lon = msg["lon"]
+            
+            # Getting GPS Location of the target crack
+            # global gps_crack_lat, gps_crack_lon
+            gps_crack_lat = float(msg["lat"])
+            gps_crack_lon = float(msg["lon"])
+            
+            print('lat from RSU-----------------------------------------------', gps_crack_lat)
+            print('lon from RSU-----------------------------------------------', gps_crack_lon)
             crack_info = msg.get("crack_info", "")
-            print(f"Lat: {gps_crack_lat} Lon: {gps_crack_lon} ----------------------------------------------------")
+
+            # print(f"Lat: {gps_crack_lat} Lon: {gps_crack_lon} ----------------------------------------------------")
             if image_id not in self.image_chunk_total:
                 self.image_chunk_total[image_id] = total
 
             self.image_chunks[image_id][chunk_num] = data
 
-            self.write_csv(self.obu_received_log,
-                           ["image_id", "chunk_number", "total_chunks", "recv_time", "file_type", "rsu_send_time", "crack_info"],
-                           [image_id, chunk_num, total, self.timestamp(), "image", "", crack_info])
+            self.write_csv(
+                self.obu_received_log,
+                ["image_id", "chunk_number", "total_chunks", "recv_time", "file_type", "rsu_send_time", "crack_info"],
+                [image_id, chunk_num, total, self.timestamp(), "image", "", crack_info]
+            )
 
             if len(self.image_chunks[image_id]) == total:
                 ordered = ''.join(self.image_chunks[image_id][i] for i in range(total))
@@ -234,12 +314,11 @@ class OBUHandler:
 
                 self.ready_flag.set()
 
-                # TODO: [CRH Question] Should we use the API here or pass it as an argument?
                 with create_cms_api(host=self.v2x_stack_ip) as api:
                     self.send_confirmation(api, image_id)
-                    if(not self.image_queue.empty()):
+                    if not self.image_queue.empty():
                         send_type = "feedback_complete"
-                        if(self.image_queue.qsize()==1):
+                        if self.image_queue.qsize() == 1:
                             send_type = "queue_complete"
                         self.send_feedback(api, image_id, send_type)
                         #time.sleep(1.0)
@@ -257,7 +336,7 @@ class OBUHandler:
 
 
 # Standalone runner that can be imported
-def run_obu(image_queue): #image_queue, gps_crack_lat, gps_crack_lon
+def run_obu(image_queue, test_num): #image_queue, gps_crack_lat, gps_crack_lon
     '''
     The main function that handles
     1. (TODO) receiving detection request (including GPS location and images if any)
@@ -265,7 +344,7 @@ def run_obu(image_queue): #image_queue, gps_crack_lat, gps_crack_lon
     3. sending detection result queue (referred as feedback in this module)
     4. (TODO) Should we put the BSM publishing here too? Or this will just take api as input?
     '''
-    handler = OBUHandler(image_queue) # image_queue, gps_crack_lat, gps_crack_lon
+    handler = OBUHandler(image_queue, test_num) # image_queue, gps_crack_lat, gps_crack_lon
     handler.send_ready_loop()
     # TODO: [CRH Question] Should we use the API here or pass it as an argument?
     with create_cms_api(host=handler.v2x_stack_ip) as api:
@@ -279,10 +358,22 @@ def run_obu(image_queue): #image_queue, gps_crack_lat, gps_crack_lon
             time.sleep(handler.cycle_timeout)
             handler.cycle_counter += 1
 
+
+def get_data_obu():
+    '''
+    Get crack GPS data from OBU.
+    '''
+    # print('lat :', gps_crack_lat)
+    # print('lon :', gps_crack_lon)
+    with lock:
+        # return 500, 500
+        return gps_crack_lat, gps_crack_lon
+
+
 # Optional direct execution
 if __name__ == "__main__":
     image_queue = queue.Queue()
     image_queue.put("latest/picture.png")
     image_queue.put("latest/picture1.png")
     image_queue.put("latest/picture2.png")
-    run_obu(image_queue)
+    run_obu(image_queue, 0)

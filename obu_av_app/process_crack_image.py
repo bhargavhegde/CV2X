@@ -4,7 +4,6 @@
 This file contains the main classes that process the raw images with cropping windows
 '''
 
-
 # Standard library imports
 import os
 import queue
@@ -24,15 +23,20 @@ import torch
 
 # Local imports
 current_dir = os.path.dirname(__file__)
-sys.path.append(os.path.join("/inference/Deep_crack"))
-from model.deepcrack import DeepCrack 
-from trainer import DeepCrackTrainer
+# [CRH] this folder is a copy of the https://github.com/CHELabUB/crack_detection/tree/master/DeepCrack 
+# folder Plus the model weights, they are not properly included in the folder.
+# thus it needs to be add to the path.
+# [CRH] changed to a folder that would not be git tracked.
+# sys.path.append(os.path.join(current_dir,"data/Deep_crack_inference"))
+sys.path.append("/inference/Deep_crack/")
 model_name = "Deep Crack"
 
+from model.deepcrack import DeepCrack as DetectionModel
+from trainer import DeepCrackTrainer as DetectionModelTrainer
 
 
 class ImageProcessor(Node):
-    def __init__(self, shared_queue):
+    def __init__(self, shared_queue, test_num):
         super().__init__('image_processor')
         self.get_logger().info('Starting ImageProcessor…')
 
@@ -65,6 +69,9 @@ class ImageProcessor(Node):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.get_logger().info(f'Using device: {self.device}')
 
+        self.test_num = test_num
+
+
         try:
             self.model= self.load_model()
             self.get_logger().info(f'{model_name} loaded ✓')
@@ -82,16 +89,15 @@ class ImageProcessor(Node):
                                                      input_topic,
                                                      self.image_callback,
                                                      q)
-
         self.crop_coord_sub = self.create_subscription(Int32MultiArray, crop_coord_topic, self.crop_center_callback, 10)
         self.get_logger().info(f'Subscribed to {input_topic} and {crop_coord_topic}')
 
 
         base = os.getcwd()
-        timestamp = time.strftime('%Y%m%d%H%M%S')
-        # timestamp = str(time.time()).replace('.', '_')  # Use timestamp with seconds
-        self.output_dirs = {k: os.path.join(base,'data', timestamp, k)
-                            for k in ['cropped_images','images', 'masks', 'latest']} #+ timestamp
+        timestamp = str(time.time())
+        test_str = "Test_" + str(self.test_num)
+        self.output_dirs = {k: os.path.join(base,'data', test_str, 'Image_Folder', k)
+                            for k in ['cropped_images','images', 'masks', 'latest', 'all_images']} #+ timestamp
         for p in self.output_dirs.values():
             os.makedirs(p, exist_ok=True)
             os.chmod(p, 0o777)
@@ -99,6 +105,8 @@ class ImageProcessor(Node):
 
         self.frame_count = 0
         self.processing_times = []
+
+        self.prev_pushed_image = "None"
 
     def crop_center_callback(self, msg: Int32MultiArray):
         self.crop_coord = msg.data
@@ -112,21 +120,33 @@ class ImageProcessor(Node):
         return None
 
     def load_model(self):
+        '''
+            [CRH] right now this does not work with the path inside the docker.
+            [CRH] TODO: make the model pull from docker
+            [CRH] future TODO, make the inference more real time and lightweight so we don't need to load the model structure.
+        '''
         """Instantiate DeepCrack + trainer, load weights, set eval mode."""
         weights = self.get_parameter('deepcrack_weights').value
 
-        model = DeepCrack().to(self.device)       
-        trainer = DeepCrackTrainer(model).to(self.device)
+        model = DetectionModel().to(self.device)       
+        trainer = DetectionModelTrainer(model).to(self.device)
 
         state_dict = trainer.saver.load(weights, multi_gpu=False)
         model.load_state_dict(state_dict)       
+
 
         model.eval()
         return model
     
     def push_queue(self):
         if self.curr_image is not None:
-            self.q.put(self.curr_image)
+            current_image = self.curr_image
+            if self.prev_pushed_image != current_image:
+                self.q.put(current_image)
+                self.prev_pushed_image = current_image
+                print(f"Image pushed {self.curr_image}")
+            else:
+                print("No new image to push") 
 
     @staticmethod
     def np2Tensor(array: np.ndarray) -> torch.Tensor:
@@ -140,93 +160,84 @@ class ImageProcessor(Node):
     def image_callback(self, msg: Image):
         '''
             [CRH] when no new image is received, it stuck with the old one?
-            TODO need to do some image preprocessing here.
+            [CRH] TODO need to do some image preprocessing here.
         '''
         tic = time.time()
         self.frame_count += 1
         try:
-            
             if self.crop_coord is None:
-                self.get_logger().warn('No crop center received yet, skipping frame. Still save full image.')
-                # still save the full image
-                # TODO: can skip this if not saving the full image
-                # return
-            
+                self.get_logger().warn('No crop center received yet, skipping frame.')
+                return
             cv_img_full = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+            cv_img_duplicate = self.bridge.imgmsg_to_cv2(msg, 'bgr8')#cv_img_full
+            x1,y1,x2,y2, self.curr_count = self.crop_coord
             height, width = cv_img_full.shape[:2]
 
-            # check if crop coordinate msg is valid
-            if not self.crop_coord or len(self.crop_coord) != 5:
-                self.get_logger().warn('Invalid crop coordinates received, skipping frame. Still save full image.')
-                valid_crop = False
-            else:
-                x1, y1, x2, y2, self.curr_count = self.crop_coord
-                valid_crop = True
-
-            if not valid_crop or not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
-                self.get_logger().warn('Crop coordinates out of bounds, skipping frame. Still save full image.')
-                # still save the full image
-                # TODO: note that this time may not be the same as the actual frame taken time
-                ts = int(time.time())
-                paths = {
-                'img': os.path.join(self.output_dirs['images'],
-                                    f'frame_{ts}_{self.frame_count}.png'),
-                }
-                cv2.imwrite(paths['img'], cv_img_full)
-                return
-
-            # Crop the image
-            cv_img = cv_img_full[y1:y2, x1:x2]
-            cv2.rectangle(cv_img_full, (x1, y1), (x2, y2), (255, 0, 0), 2)
-
-            mean = np.array(self.get_parameter('normalization_mean').value,
-                            dtype=np.float32)
-            img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB).astype(np.float32)
-            img_norm = (img_rgb - mean) / 255.0
-            input_tensor = self.np2Tensor(img_norm).unsqueeze(0).to(self.device)
-
-            # Run inference
-            # TODO: speed this up with real-time inference e.g. with ONNX or TensorRT
-            with torch.no_grad():
-                pred = self.model(input_tensor)[0]  # single forward
-                pred = torch.sigmoid(pred).cpu().squeeze().numpy() * 255
-            mask = pred.astype(np.uint8)
-
-            ts = int(time.time())
-            paths = {
-                'img': os.path.join(self.output_dirs['images'],
-                                    f'frame_{ts}_{self.frame_count}.png'),
-                'crop':os.path.join(self.output_dirs['cropped_images'],
-                                    f'frame_{ts}_{self.frame_count}.png'),
-                'mask': os.path.join(self.output_dirs['masks'],
-                                     f'frame_{ts}_{self.frame_count}.png'),
-                'latest_img': os.path.join(self.output_dirs['latest'],
-                                           'latest_image_frame.jpg'),
-                'latest_mask': os.path.join(self.output_dirs['latest'],
-                                            'latest_mask_frame.jpg'),
-                'latest_txt': os.path.join(self.output_dirs['latest'],
-                                           'latest_time.txt')
-            }
-            image_name = f'frame_{ts}_{self.frame_count}.png'
-            self.curr_image = str(os.path.basename(paths['mask']))
-
-            # cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-            cv2.imwrite(paths['crop'], cv_img)
-            cv2.imwrite(paths['img'], cv_img_full)
-            cv2.imwrite(paths['mask'], mask)
             
-            # additionally save the latest image and mask
-            # cv2.imwrite(paths['latest_img'], cv_img)
-            # cv2.imwrite(paths['latest_mask'], mask)
-            # with open(paths['latest_txt'], 'w') as f:
-            #     f.write(f'{ts}_{self.frame_count}')
+            ts = int(time.time())
 
-            # Logging Relevant Information
-            image_log = f"Image_Name: {image_name}, count:{self.curr_count}, x1: {x1}, x2: {x2}, y1: {y1}, y2: {y2}\n"
-            image_log_filename = 'realtime_data_log.txt'
+            #if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+            filename_all_images = os.path.join(self.output_dirs['all_images'], f'frame_{ts}_{self.frame_count}.png')
+            cv2.imwrite(filename_all_images, cv_img_duplicate)
+            
+            if 0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height:
+                cv_img = cv_img_full[y1:y2, x1:x2]
+                cv2.rectangle(cv_img_full, (x1, y1), (x2, y2), (255, 0, 0), 2)
 
-            with open(image_log_filename, "a") as log_file:
+                mean = np.array(self.get_parameter('normalization_mean').value,
+                                dtype=np.float32)
+                img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB).astype(np.float32)
+                img_norm = (img_rgb - mean) / 255.0
+                input_tensor = self.np2Tensor(img_norm).unsqueeze(0).to(self.device)
+
+
+                with torch.no_grad():
+                    pred = self.model(input_tensor)[0]  # single forward
+                    pred = torch.sigmoid(pred).cpu().squeeze().numpy() * 255
+                mask = pred.astype(np.uint8)
+
+                # ts = int(time.time())
+                paths = {
+                    'img': os.path.join(self.output_dirs['images'],
+                                        f'frame_{ts}_{self.frame_count}.png'),
+                    # 'all_img': os.path.join(self.output_dirs['all_images'],
+                    #                     f'frame_{ts}_{self.frame_count}.png'),
+                    'crop':os.path.join(self.output_dirs['cropped_images'],
+                                        f'frame_{ts}_{self.frame_count}.png'),
+                    'mask': os.path.join(self.output_dirs['masks'],
+                                        f'frame_{ts}_{self.frame_count}.png'),
+                    'latest_img': os.path.join(self.output_dirs['latest'],
+                                            'latest_image_frame.jpg'),
+                    'latest_mask': os.path.join(self.output_dirs['latest'],
+                                                'latest_mask_frame.jpg'),
+                    'latest_txt': os.path.join(self.output_dirs['latest'],
+                                            'latest_time.txt')
+                }
+
+                self.curr_image = str(os.path.basename(paths['mask']))
+
+                cv_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+                cv2.imwrite(paths['crop'], cv_img)
+                # already did this at line 181
+                # cv2.imwrite(paths['all_img'], cv_img_duplicate)
+                cv2.imwrite(paths['img'], cv_img_full)
+                cv2.imwrite(paths['mask'], mask)
+                cv2.imwrite(paths['latest_img'], cv_img)
+                cv2.imwrite(paths['latest_mask'], mask)
+                with open(paths['latest_txt'], 'w') as f:
+                    f.write(f'{ts}_{self.frame_count}')
+            else:
+                self.get_logger().warn('Crop coordinates out of bounds, skipping frame.')
+            
+            filename_img = f'frame_{ts}_{self.frame_count}.png'
+
+            filename_image = f"data/Test_{self.test_num}/image_log.txt"
+
+            image_log = f"Image_name: {filename_img}, count:{self.curr_count}\n"
+
+            with open(filename_image, "a") as log_file:
                 log_file.write(image_log)
+
 
 
             if self.get_parameter('display_images').value:
@@ -244,11 +255,11 @@ class ImageProcessor(Node):
             self.get_logger().error(f'Frame {self.frame_count} failed: {e}')
 
 
-def save_images(shared_queue):
+def save_images(shared_queue, test_num):
     # rclpy.init(args=args)
     node = None
     try:
-        node = ImageProcessor(shared_queue)
+        node = ImageProcessor(shared_queue, test_num)
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.1)
     except KeyboardInterrupt:
@@ -263,7 +274,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = None
     try:
-        node = ImageProcessor(queue.Queue())
+        node = ImageProcessor(queue.Queue(), test_num=0)
         rclpy.spin(node)
     except KeyboardInterrupt:
         if node:
