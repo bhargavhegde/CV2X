@@ -182,7 +182,7 @@ def fac_callback(key: int, data: FacNotifData, buffer: bytes) -> None:
                "latitude": decoded_message["value"][1]["coreData"]["lat"] / 10e6,
                "longitude": decoded_message["value"][1]["coreData"]["long"] / 10e6,
                "elevation": decoded_message["value"][1]["coreData"]["elev"] / 10e3,
-               "speed": decoded_message["value"][1]["coreData"]["speed"] / 1000,
+               "speed": decoded_message["value"][1]["coreData"]["speed"] / 50,
                "heading": decoded_message["value"][1]["coreData"]["heading"],
                "angle": decoded_message["value"][1]["coreData"]["angle"],
                "time_generated_theory": time_generated_theory,

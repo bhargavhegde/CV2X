@@ -206,7 +206,7 @@ class ACC(Node):
             self.S_BUFFER = syncing(self.N_BUFFER, self.F_BUFFER, self.S_BUFFER)
 
     def fac_callback(self, key: int, data: FacNotifData, buffer: bytes) -> None:
-        print('here!')
+        # print('here!')
         timestamp = round(time.time() * 1000)
         decoded_message = asn1_decode(buffer, Asn1Type.US_MESSAGE_FRAME)
         hearing_ID = decoded_message["value"][1]["coreData"]["id"].hex()
@@ -223,6 +223,7 @@ class ACC(Node):
             "heading": decoded_message["value"][1]["coreData"]["heading"],
             "angle": decoded_message["value"][1]["coreData"]["angle"],
             "FAC_timestamp": FAC_timestamp}
+        
         with open(fac_directory, 'a', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(list(self.FAC_msg.values()))
