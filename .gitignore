@@ -4,6 +4,11 @@
 *.DS_Store
 *.asv
 
+# trained results: we will not save 
+*.pth
+*.ckpt
+*.pt
+
 # python package
 *.pyc
 *__pycache__*
