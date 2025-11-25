@@ -1,0 +1,19 @@
+xhost +local:root
+
+docker run -it --rm \
+    --gpus all \
+    --privileged \
+    --network host \
+    -e DISPLAY=$DISPLAY \
+    -e QT_X11_NO_MITSHM=1 \
+    -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+    --device /dev/bus/usb \
+    --device /dev/video0 \
+    --device /dev/video1 \
+    --device /dev/video2 \
+    --device /dev/video3 \
+    -v /dev:/dev \
+    -v /path/to/your/workspace:/workspace \
+    stereolabs/zed:4.2-gl-devel-cuda11.4-ubuntu20.04
+
+apt-get update && apt-get install -y usbutils libglib2.0-0 libgtk2.0-dev
