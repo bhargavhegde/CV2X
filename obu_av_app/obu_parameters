@@ -1,0 +1,30 @@
+{
+  "V2X_STACK_IP": "192.168.0.54",
+  "RECEIVE_IMAGE_PSID": 200,
+  "SEND_CONFIRM_PSID": 300,
+  "SEND_FEEDBACK_PSID": 400,
+  "SEND_READY_PSID": 201,
+
+  "CHUNK_SIZE": 1024,
+  "READY_INTERVAL": 0.05,
+  "CYCLE_TIMEOUT_SEC": 2,
+
+  "OBU_LOG_DIR": "data/obu_logs",
+
+  "IMAGE_FOLDER": "/home/chemob01u/Desktop/Rishabh_Folder/trying_image",
+  "USE_SUBSCRIBED_FOLDER" : true,
+  
+  "FOLDER_WAIT_TIMEOUT": 6000000,
+  "FILE_WAIT_TIMEOUT": 6000000,
+  "IMAGE_EXTS": [".png", ".jpg", ".jpeg"],
+  "wsmp_drain_limit": 50,
+
+  "GPS_PUB_HZ": 2.0,
+  "GPS_TOPIC": "/obu/gps",
+  "BASE_DIR_TOPIC": "/obu/base_dir",
+
+  "TEST_BASE_ROOT": "/ws/cv2x/obu_av_app/data",   
+
+  "NAV_INTERVAL": 0.5
+
+}

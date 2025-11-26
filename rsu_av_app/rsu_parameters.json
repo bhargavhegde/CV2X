@@ -12,5 +12,5 @@
     "gps_lat": 43.002831897548944,
     "gps_lon": -78.78671042296428,
     "logging_level": 0,
-    "send_image": true
+    "send_image": false
 }
