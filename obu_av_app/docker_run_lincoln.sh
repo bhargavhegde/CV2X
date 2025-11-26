@@ -14,4 +14,5 @@ docker run -it --network host --runtime=nvidia --gpus all --privileged \
   --name=cv2x --rm \
   -v /tmp/.X11-unix:/tmp/.X11-unix \
   -e DISPLAY=$DISPLAY \
+  -e TZ="America/New_York" \
   chelab/crack-detection:20250806
