@@ -16,6 +16,7 @@ The tools allow you to:
 .
 ├── docker_command.txt         # Text file having the docker run command
 ├── zed_length.py              # Click-based 3D distance measurement tool
+├── zed_length_crack_multi_points.py  # Multi-point crack length measurement tool
 ├── zed_depth.py               # Depth-at-cursor visualization tool
 └── README.md
 ```
@@ -132,6 +133,42 @@ python3 zed_depth.py
 * Shows depth near the cursor
 * Green = valid depth, red = invalid
 * Automatic bounding to keep the label on-screen
+
+---
+
+## 4.3 Multi-point Crack Length Tool — `zed_length_crack_multi_points.py`
+
+This tool allows tracing a crack or any polyline on a frozen ZED frame by collecting multiple 3D points and computing the total Euclidean length (sum of consecutive segments) in centimeters.
+
+Run:
+
+```bash
+python3 zed_length_crack_multi_points.py
+```
+
+Features
+
+* Live camera feed with a freeze-to-draw workflow.
+* Click-and-drag or click to add multiple points; each point maps pixel → (X,Y,Z) using the ZED depth with a neighborhood median fallback for robustness.
+* Computes total length as sum of 3D segment distances (reported in cm).
+* Saves an annotated image (file named like `crack_<tick>.png`) with the traced polyline and per-point labels.
+* Attempts to read camera intrinsics robustly from the ZED camera info.
+
+Controls
+
+* **f**: Freeze current frame and enter draw mode.
+* **r**: Return to live mode and reset collected points.
+* **c**: Compute and print crack length (requires at least two points).
+* **u**: Undo last added point.
+* **s**: Save annotated frozen image to disk.
+* **q**: Quit the program.
+
+Notes & Tips
+
+* The script uses a `neighbor_search_radius` window (default 3 px) to find a nearby valid depth when a direct depth read is invalid; increase it if the scene has sparse depth.
+* The ZED camera `coordinate_units` is set to centimeters so reported lengths are in cm.
+* Console output includes per-point prints such as: `Added point 3: pixel=(x,y) depth=NN.NN -> 3D=[X, Y, Z]` and the final `Crack length = XX.XX cm`.
+* If depth measurements are frequently invalid, improve lighting, add texture to the surface, or adjust ZED depth settings.
 
 ---
 
