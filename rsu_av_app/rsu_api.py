@@ -172,6 +172,7 @@ class RSUHandler:
             candidate += 60000
         return candidate
 
+
     def write_csv(self, path: str, headers: list, row: list) -> None:
         """Append a row to a CSV file; create header if file is new."""
         file_exists = os.path.exists(path)
