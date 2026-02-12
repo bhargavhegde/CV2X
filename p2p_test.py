@@ -63,9 +63,9 @@ def main():
     except Exception as e:
         print(f"Error: {e}")
         print("\nTroubleshooting Tips:")
-        print(1. "Ensure you are connected to the OBU WiFi.")
-        print(2. "Ping the OBU IP (try 192.168.0.54 or 192.168.1.54).")
-        print(3. "Ensure no firewall is blocking the connection.")
+        print("1. Ensure you are connected to the OBU WiFi.")
+        print("2. Ping the OBU IP (try 192.168.0.54 or 192.168.1.54).")
+        print("3. Ensure no firewall is blocking the connection.")
 
 if __name__ == "__main__":
     main()
