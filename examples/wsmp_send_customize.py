@@ -6,18 +6,38 @@
 import time
 from typing import Any
 
-from pycmssdk import ( # noqa: F401
-    WILDCARD,
-    MacAddr,
-    RadioTxParams,
-    SecDot2TxInfo,
-    SecDot2TxSignInfo,
-    SignMethod,
-    WsmpSendData,
-    WsmpTxHdrInfo,
-    WsmpTxNotifData,
-    create_cms_api,
-)
+try:
+    from pycmssdk import (  # noqa: F401
+        WILDCARD,
+        MacAddr,
+        RadioTxParams,
+        SecDot2TxInfo,
+        SecDot2TxSignInfo,
+        SignMethod,
+        WsmpSendData,
+        WsmpTxHdrInfo,
+        WsmpTxNotifData,
+        create_cms_api,
+    )
+    print("Successfully loaded real pycmssdk.")
+except ImportError:
+    import sys
+    import os
+    # Add parent directory to path to import mock_pycmssdk
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+    from mock_pycmssdk import (  # noqa: F401
+        WILDCARD,
+        MacAddr,
+        RadioTxParams,
+        SecDot2TxInfo,
+        SecDot2TxSignInfo,
+        SignMethod,
+        WsmpSendData,
+        WsmpTxHdrInfo,
+        WsmpTxNotifData,
+        create_cms_api,
+    )
+    print("Loaded MOCK pycmssdk for local experimentation.")
 
 
 def print_wsmp_tx_notif_data(data: WsmpTxNotifData):
