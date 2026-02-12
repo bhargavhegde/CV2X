@@ -28,7 +28,7 @@ def rx_callback(key: int, data: WsmpRxNotifData, buffer: bytes) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="OBU Peer-to-Peer Test Tool")
-    parser.add_argument("--host", default="192.168.0.54", help="IP address of the OBU V2X Stack")
+    parser.add_argument("--host", default="192.168.1.54", help="IP address of the OBU V2X Stack")
     parser.add_argument("--mode", choices=["send", "listen"], required=True, help="Operating mode")
     parser.add_argument("--psid", type=int, default=0x42, help="PSID to use for transmission/reception")
     args = parser.parse_args()

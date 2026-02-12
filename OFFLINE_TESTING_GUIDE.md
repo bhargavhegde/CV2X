@@ -42,7 +42,7 @@ Payload: OBU_PING_1
 
 ### **5. Troubleshooting Tips (If it doesn't work)**
 *   **No WiFi Connection**: Your OS might disconnect from the OBU because it has "No Internet". Go to your WiFi settings and tell it to **"Connect Anyway"** or **"Switch to Mobile Data: No"**.
-*   **Wrong IP**: If `192.168.0.54` doesn't work, try `192.168.1.54` in both the ping and the script arguments.
+*   **Wrong IP**: The script defaults to `192.168.1.54` (common). If your OBU is `192.168.0.54`, run with `--host 192.168.0.54`.
 *   **Firewall**: Ensure your computer's firewall is not blocking incoming UDP/TCP traffic from the OBU.
 
 ### **6. Running the Main Project Script (OBU_API.py)**
