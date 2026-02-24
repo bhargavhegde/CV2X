@@ -30,7 +30,33 @@ python3 p2p_test.py --mode send --host 192.168.0.54
 ```
 *   You will see: `[SEND] Sending: OBU_PING_1`, then `OBU_PING_2`, etc.
 
-### **4. Verify Reception**
+### **4. Bandwidth & Latency Test (8 Mbps)**
+> **Goal:** Verify the C-V2X link can sustain 8 Mbps throughput with low latency.
+> **See full datasheet:** `CV2X_BANDWIDTH_LATENCY_DATASHEET.md`
+
+#### **On RECEIVER (OBU 2) — Start First:**
+```bash
+python3 bandwidth_latency_test.py --mode listen --host 192.168.0.54
+```
+*   Listening for packets. Wait for "[RX] First packet received!"
+
+#### **On SENDER (OBU 1):**
+```bash
+python3 bandwidth_latency_test.py --mode send --host 192.168.0.54
+```
+*   Sends ~977 packets/sec for 30 seconds to hit 8 Mbps target.
+*   Upon completion, press **Ctrl+C** on the receiver to print the final report.
+
+#### **Expected Results (PASS criteria):**
+| Metric       | Pass if...          |
+|--------------|---------------------|
+| Throughput   | ≥ 7.2 Mbps          |
+| Avg Latency  | < 100 ms            |
+| Packet Loss  | < 1%                |
+
+---
+
+### **5. Verify Basic Reception (Ping Test)**
 Check the screen of the **Receiver (OBU 2)**. You should see:
 ```text
 [RECEIVE] ------ Message Received Over-The-Air ------
