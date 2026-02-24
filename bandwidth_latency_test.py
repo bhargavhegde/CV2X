@@ -257,6 +257,7 @@ def run_sender(api, args):
 
 
 def main():
+    global TEST_DURATION_S  # declared first — before any reference below
     parser = argparse.ArgumentParser(
         description="C-V2X Bandwidth & Latency Test (8 Mbps target)"
     )
@@ -266,10 +267,9 @@ def main():
                         help="Operating mode")
     parser.add_argument("--psid",  type=lambda x: int(x, 0), default=PSID,
                         help=f"PSID (default: {hex(PSID)})")
-    parser.add_argument("--duration", type=int, default=TEST_DURATION_S,
-                        help=f"Sender run time in seconds (default: {TEST_DURATION_S})")
+    parser.add_argument("--duration", type=int, default=30,
+                        help="Sender run time in seconds (default: 30)")
     args   = parser.parse_args()
-    global TEST_DURATION_S
     TEST_DURATION_S = args.duration
 
     print(f"Connecting to OBU V2X stack at {args.host} ...")
