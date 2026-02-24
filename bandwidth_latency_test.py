@@ -73,22 +73,23 @@ TEST_DURATION_S  = 30       # How long to run the sender (seconds)
 REPORT_INTERVAL  = 5        # Print a live update every N seconds
 
 # OBU-safe packet sizing:
-# - Commsignia stack truncates payloads > ~250 bytes after security headers.
-# - 100-byte payload stays well within the safe zone.
-PAYLOAD_BYTES    = 100      # bytes of application data per packet
+# - The eac.py local API socket delivers max ~207 bytes per TCP read.
+# - With 100B payload: 112B app + ~129B OBU framing = 241B > 207B → partial read error.
+# - With 50B payload:  62B app + ~129B OBU framing ≈ 191B < 207B → fits cleanly.
+PAYLOAD_BYTES    = 50       # bytes of application data per packet
 
 # Header: 8-byte timestamp (float64) + 4-byte sequence number (uint32)
 HEADER_SIZE      = 12
-PACKET_TOTAL     = PAYLOAD_BYTES + HEADER_SIZE   # 112 bytes per packet
+PACKET_TOTAL     = PAYLOAD_BYTES + HEADER_SIZE   # 62 bytes per packet
 
 # OBU-safe send rate:
-# The V2X stack queue handles ~200 pkt/s reliably.
-# Higher rates cause queue overflow and corrupt/dropped packets.
-PACKETS_PER_SEC  = 200
-INTER_PKT_DELAY  = 1.0 / PACKETS_PER_SEC         # 5 ms between packets
+# At 200 pkt/s the OBU IPC queue overflows → partial TCP reads in eac.py.
+# 50 pkt/s keeps the queue well within budget.
+PACKETS_PER_SEC  = 50
+INTER_PKT_DELAY  = 1.0 / PACKETS_PER_SEC         # 20 ms between packets
 
 # Theoretical max throughput with these settings:
-# 200 pkt/s × 112 bytes × 8 bits = ~179 Kbps application-layer
+# 50 pkt/s × 62 bytes × 8 bits = ~24.8 Kbps application-layer
 # (The 8 Mbps figure is the raw PHY capacity of the 5.9 GHz channel)
 
 print(f"""
