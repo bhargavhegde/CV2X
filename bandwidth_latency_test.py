@@ -162,7 +162,7 @@ def rx_callback(key: int, data: WsmpRxNotifData, buffer: bytes) -> None:
             f"  Packets Received : {rx_stats['count']}\n"
             f"  Packets Lost     : {rx_stats['lost']}\n"
             f"  Packet Loss      : {pkt_loss:.2f}%\n"
-            f"  Avg Throughput   : {avg_throughput:.2f} Mbps  (target: {TARGET_MBPS} Mbps)\n"
+            f"  Avg Throughput   : {avg_throughput:.4f} Mbps\n"
             f"  Avg Latency      : {avg_latency:.2f} ms\n"
             f"  Jitter (std-dev) : {jitter:.2f} ms\n"
             f"  RSSI (last pkt)  : {data.radio.rssi} dBm\n"
@@ -201,7 +201,7 @@ def print_final_rx_report():
 ╠══════════════════════════════════════════════════════════╣
 ║  BANDWIDTH                                              ║
 ║    Achieved          : {avg_throughput:.2f} Mbps                    
-║    Target            : {TARGET_MBPS} Mbps                          
+║    Target            : {theoretical_mbps:.4f} Mbps (theoretical max)    
 ║    Result            : {'✅ PASS' if pass_bw else '❌ FAIL' }                     
 ╠══════════════════════════════════════════════════════════╣
 ║  LATENCY (one-way, estimated)                           ║
@@ -215,7 +215,7 @@ def print_final_rx_report():
 
 
 def run_sender(api, args):
-    """Send fixed-size packets at the rate required to achieve TARGET_MBPS."""
+    """Send fixed-size packets at the configured rate (PACKETS_PER_SEC)."""
     data_payload = b'\xAB' * PAYLOAD_BYTES  # Dummy data padding
 
     send_data = WsmpSendData(
