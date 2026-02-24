@@ -18,7 +18,7 @@ THEORY:
     We use 100 bytes per packet to stay safely within this limit.
   - With SIGN_METH_SIGN_CERT, every packet gets a ~600-byte certificate
     appended. This causes the eac.py payload-length mismatch errors.
-    We use UNSECURED mode for bandwidth testing to avoid this overhead.
+    We use SIGN_METH_NONE for bandwidth testing to avoid this overhead.
   - The OBU queue handles ~200 pkt/s reliably.
     At 100 bytes/pkt × 200 pkt/s = ~0.16 Mbps application throughput.
     The 8 Mbps figure is the raw PHY channel capacity, not app-layer.
@@ -99,7 +99,7 @@ print(f"""
 ║  Packets/sec       : {PACKETS_PER_SEC}                              ║
 ║  Inter-packet gap  : {INTER_PKT_DELAY*1000:.1f} ms                         ║
 ║  Test Duration     : {TEST_DURATION_S} seconds                         ║
-║  Security Mode     : UNSECURED (bandwidth test mode)    ║
+║  Security Mode     : SIGN_METH_NONE (bandwidth test)    ║
 ╚══════════════════════════════════════════════════════════╝
 """)
 
@@ -224,13 +224,13 @@ def run_sender(api, args):
             dest_address=MacAddr(0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF),  # Broadcast
         ),
         wsmp_hdr=WsmpTxHdrInfo(psid=args.psid),
-        # UNSECURED for bandwidth testing — avoids the ~600-byte IEEE 1609.2
+        # SIGN_METH_NONE for bandwidth testing — avoids the ~600-byte IEEE 1609.2
         # certificate that SIGN_METH_SIGN_CERT appends to every packet.
         # That certificate caused payload-length mismatches in eac.py and was
         # the main reason for the high packet loss in the initial test run.
         security=SecDot2TxInfo(
             sign_info=SecDot2TxSignInfo(
-                sign_method=SignMethod.SIGN_METH_UNSECURED,
+                sign_method=SignMethod.SIGN_METH_NONE,
                 psid=args.psid,
             )
         ),
